@@ -20,6 +20,8 @@ type Personnel = {
   position: string | null; notes: string | null; is_active: boolean
   base_salary: number; base_bonus: number; hire_date: string | null
   termination_date: string | null; created_at: string
+  bakiye: number | null; bakiye_tarihi: string | null
+  ara_odeme: number | null; ara_odeme_tarihi: string | null
 }
 type Payment = {
   id: string; personnel_id: string; payment_type: 'salary' | 'bonus' | 'freelance'
@@ -59,6 +61,7 @@ export function PersonnelPage() {
   const [personForm, setPersonForm] = useState({
     name: '', type: 'employee' as 'employee' | 'freelance',
     position: '', base_salary: '', base_bonus: '', hire_date: '', termination_date: '', notes: '',
+    bakiye: '', bakiye_tarihi: '', ara_odeme: '', ara_odeme_tarihi: '',
   })
   const [payForm, setPayForm] = useState({
     personnel_id: '',
@@ -154,6 +157,10 @@ export function PersonnelPage() {
       hire_date: p?.hire_date ?? '',
       termination_date: p?.termination_date ?? '',
       notes: p?.notes ?? '',
+      bakiye: p?.bakiye != null ? String(p.bakiye) : '',
+      bakiye_tarihi: p?.bakiye_tarihi ?? '',
+      ara_odeme: p?.ara_odeme != null ? String(p.ara_odeme) : '',
+      ara_odeme_tarihi: p?.ara_odeme_tarihi ?? '',
     })
     setShowPersonForm(true)
   }
@@ -173,6 +180,12 @@ export function PersonnelPage() {
     }
     if (personForm.hire_date) payload.hire_date = personForm.hire_date
     if (personForm.termination_date) payload.termination_date = personForm.termination_date
+    if (personForm.type === 'freelance') {
+      payload.bakiye = personForm.bakiye ? parseFloat(personForm.bakiye.replace(',', '.')) : null
+      payload.bakiye_tarihi = personForm.bakiye_tarihi || null
+      payload.ara_odeme = personForm.ara_odeme ? parseFloat(personForm.ara_odeme.replace(',', '.')) : null
+      payload.ara_odeme_tarihi = personForm.ara_odeme_tarihi || null
+    }
 
     let err: any = null
     if (editingPerson) {
@@ -697,7 +710,19 @@ export function PersonnelPage() {
                             <p className="text-xs text-muted-foreground">{person.position || 'Serbest Çalışan'}</p>
                           </div>
                         </div>
-                        <div className="flex items-center gap-3">
+                        <div className="flex items-center gap-4">
+                          {person.bakiye != null && (
+                            <div className="text-right">
+                              <p className="text-[10px] text-muted-foreground">Bakiye{person.bakiye_tarihi ? ` · ${person.bakiye_tarihi.slice(0,10)}` : ''}</p>
+                              <AmountDisplay amount={person.bakiye} className="text-sm font-bold text-violet-700" />
+                            </div>
+                          )}
+                          {person.ara_odeme != null && (
+                            <div className="text-right">
+                              <p className="text-[10px] text-muted-foreground">Ara Ödeme{person.ara_odeme_tarihi ? ` · ${person.ara_odeme_tarihi.slice(0,10)}` : ''}</p>
+                              <AmountDisplay amount={person.ara_odeme} negative className="text-sm font-bold text-amber-600" />
+                            </div>
+                          )}
                           {personTotal > 0 && (
                             <div className="text-right">
                               <p className="text-xs text-muted-foreground">Bu Ay Ödenen</p>
@@ -822,6 +847,31 @@ export function PersonnelPage() {
                   <Input type="date" value={personForm.termination_date} onChange={e => setPersonForm(f => ({ ...f, termination_date: e.target.value }))} />
                 </div>
               </div>
+              {personForm.type === 'freelance' && (
+                <div className="space-y-3 border border-violet-100 bg-violet-50/40 rounded-xl p-3">
+                  <p className="text-xs font-semibold text-violet-700 uppercase tracking-wide">Bakiye & Ara Ödeme</p>
+                  <div className="grid grid-cols-2 gap-3">
+                    <div className="space-y-1.5">
+                      <Label>Bakiye (₺)</Label>
+                      <Input type="number" value={personForm.bakiye} onChange={e => setPersonForm(f => ({ ...f, bakiye: e.target.value }))} placeholder="0" />
+                    </div>
+                    <div className="space-y-1.5">
+                      <Label>Bakiye Tarihi</Label>
+                      <Input type="date" value={personForm.bakiye_tarihi} onChange={e => setPersonForm(f => ({ ...f, bakiye_tarihi: e.target.value }))} />
+                    </div>
+                  </div>
+                  <div className="grid grid-cols-2 gap-3">
+                    <div className="space-y-1.5">
+                      <Label>Ara Ödeme (₺)</Label>
+                      <Input type="number" value={personForm.ara_odeme} onChange={e => setPersonForm(f => ({ ...f, ara_odeme: e.target.value }))} placeholder="0" />
+                    </div>
+                    <div className="space-y-1.5">
+                      <Label>Ara Ödeme Tarihi</Label>
+                      <Input type="date" value={personForm.ara_odeme_tarihi} onChange={e => setPersonForm(f => ({ ...f, ara_odeme_tarihi: e.target.value }))} />
+                    </div>
+                  </div>
+                </div>
+              )}
               <div className="space-y-1.5">
                 <Label>Notlar</Label>
                 <Textarea value={personForm.notes} onChange={e => setPersonForm(f => ({ ...f, notes: e.target.value }))} rows={2} />

@@ -22,6 +22,7 @@ type Personnel = {
   termination_date: string | null; created_at: string
   bakiye: number | null; bakiye_tarihi: string | null
   ara_odeme: number | null; ara_odeme_tarihi: string | null
+  son_odeme_gunu: number | null
 }
 type Payment = {
   id: string; personnel_id: string; payment_type: 'salary' | 'bonus' | 'freelance'
@@ -61,7 +62,7 @@ export function PersonnelPage() {
   const [personForm, setPersonForm] = useState({
     name: '', type: 'employee' as 'employee' | 'freelance',
     position: '', base_salary: '', base_bonus: '', hire_date: '', termination_date: '', notes: '',
-    bakiye: '', bakiye_tarihi: '', ara_odeme: '', ara_odeme_tarihi: '',
+    bakiye: '', bakiye_tarihi: '', ara_odeme: '', ara_odeme_tarihi: '', son_odeme_gunu: '',
   })
   const [payForm, setPayForm] = useState({
     personnel_id: '',
@@ -161,6 +162,7 @@ export function PersonnelPage() {
       bakiye_tarihi: p?.bakiye_tarihi ?? '',
       ara_odeme: p?.ara_odeme != null ? String(p.ara_odeme) : '',
       ara_odeme_tarihi: p?.ara_odeme_tarihi ?? '',
+      son_odeme_gunu: p?.son_odeme_gunu != null ? String(p.son_odeme_gunu) : '',
     })
     setShowPersonForm(true)
   }
@@ -186,6 +188,7 @@ export function PersonnelPage() {
       payload.ara_odeme = personForm.ara_odeme ? parseFloat(personForm.ara_odeme.replace(',', '.')) : null
       payload.ara_odeme_tarihi = personForm.ara_odeme_tarihi || null
     }
+    payload.son_odeme_gunu = personForm.son_odeme_gunu ? parseInt(personForm.son_odeme_gunu) : null
 
     let err: any = null
     if (editingPerson) {
@@ -846,6 +849,20 @@ export function PersonnelPage() {
                   <Label>İşten Çıkış Tarihi</Label>
                   <Input type="date" value={personForm.termination_date} onChange={e => setPersonForm(f => ({ ...f, termination_date: e.target.value }))} />
                 </div>
+              </div>
+              <div className="space-y-1.5">
+                <Label>Son Ödeme Günü <span className="text-muted-foreground font-normal">(her ayın kaçında?)</span></Label>
+                <div className="relative">
+                  <Input
+                    type="number" min="1" max="31"
+                    value={personForm.son_odeme_gunu}
+                    onChange={e => setPersonForm(f => ({ ...f, son_odeme_gunu: e.target.value }))}
+                    placeholder="örn. 15"
+                    className="pr-14"
+                  />
+                  <span className="absolute right-3 top-1/2 -translate-y-1/2 text-xs text-muted-foreground">. gün</span>
+                </div>
+                <p className="text-[10px] text-muted-foreground">Bu gün geçtikten sonra ödenmemişse borçlara otomatik eklenir</p>
               </div>
               {personForm.type === 'freelance' && (
                 <div className="space-y-3 border border-violet-100 bg-violet-50/40 rounded-xl p-3">

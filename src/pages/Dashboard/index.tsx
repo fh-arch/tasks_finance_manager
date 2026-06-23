@@ -62,30 +62,60 @@ export function DashboardPage() {
       const start = startOfMonth(now).toISOString()
       const end = endOfMonth(now).toISOString()
 
-      const [incomeRes, expenseRes, recNoContact, payNoContact, subsRes, allSubsRes, overdueRes, contactsRes] = await Promise.all([
+      const [incomeRes, expenseRes, recNoContact, payNoContact, subsRes, allSubsRes, overdueRes, contactsRes, personnelRes, personnelPayRes] = await Promise.all([
         supabase.from('transactions').select('amount').eq('user_id', user.id).eq('type', 'income').eq('status', 'completed').gte('transaction_date', start).lte('transaction_date', end),
         supabase.from('transactions').select('amount').eq('user_id', user.id).eq('type', 'expense').eq('status', 'completed').gte('transaction_date', start).lte('transaction_date', end),
-        // Carisi olmayan alacaklar — contact'lılar contacts.current_balance üzerinden sayılacak
         supabase.from('receivables').select('amount,paid_amount').eq('user_id', user.id).in('status', ['pending', 'partial', 'overdue']).is('contact_id', null),
         supabase.from('payables').select('amount,paid_amount').eq('user_id', user.id).in('status', ['pending', 'partial', 'overdue']).is('contact_id', null),
         supabase.from('subscriptions').select('name,amount,next_billing_date').eq('user_id', user.id).eq('status', 'active').lte('next_billing_date', format(new Date(now.getTime() + 7 * 86400000), 'yyyy-MM-dd')),
-        // Tüm aktif abonelikler borç toplamı için
         supabase.from('subscriptions').select('name,amount,billing_cycle,next_billing_date').eq('user_id', user.id).eq('status', 'active'),
         supabase.from('receivables').select('description,amount,due_date').eq('user_id', user.id).eq('status', 'overdue').order('due_date').limit(5),
         supabase.from('contacts').select('current_balance').eq('user_id', user.id).eq('is_active', true).neq('current_balance', 0),
+        supabase.from('personnel').select('id,name,type,base_salary,base_bonus,ara_odeme,hire_date,termination_date,son_odeme_gunu').eq('user_id', user.id).eq('is_active', true),
+        supabase.from('personnel_payments').select('personnel_id,payment_type,period_month,period_year').eq('user_id', user.id),
       ])
 
       const monthlyIncome = (incomeRes.data ?? []).reduce((s, r) => s + r.amount, 0)
       const monthlyExpense = (expenseRes.data ?? []).reduce((s, r) => s + r.amount, 0)
-      // Toplam alacak = cari bakiyesi pozitif olanlar + carisi olmayan resmi alacaklar
-      const cariAlacak = (contactsRes.data ?? []).filter(c => c.current_balance > 0).reduce((s, c) => s + c.current_balance, 0)
-      const cariBorc = (contactsRes.data ?? []).filter(c => c.current_balance < 0).reduce((s, c) => s + Math.abs(c.current_balance), 0)
+      const cariAlacak = (contactsRes.data ?? []).filter((c: any) => c.current_balance > 0).reduce((s: number, c: any) => s + c.current_balance, 0)
+      const cariBorc = (contactsRes.data ?? []).filter((c: any) => c.current_balance < 0).reduce((s: number, c: any) => s + Math.abs(c.current_balance), 0)
       const noContactRec = (recNoContact.data ?? []).reduce((s, r) => s + (r.amount - (r.paid_amount ?? 0)), 0)
       const noContactPay = (payNoContact.data ?? []).reduce((s, r) => s + (r.amount - (r.paid_amount ?? 0)), 0)
-      // Abonelik giderlerini bekleyen borçlara ekle
-      const subscriptionTotal = (allSubsRes.data ?? []).reduce((s, sub) => s + sub.amount, 0)
+      const subscriptionTotal = (allSubsRes.data ?? []).reduce((s: number, sub: any) => s + sub.amount, 0)
+
+      // Ödenmemiş personel ödemeleri — son 3 ay
+      const allPersonnel = (personnelRes.data ?? []) as any[]
+      const allPersonnelPays = (personnelPayRes.data ?? []) as any[]
+      let personnelUnpaid = 0
+      const todayDay = now.getDate()
+      for (let i = 0; i <= 2; i++) {
+        const d = subMonths(now, i)
+        const m = d.getMonth() + 1
+        const y = d.getFullYear()
+        const mStart = `${y}-${String(m).padStart(2,'0')}-01`
+        const mEnd = new Date(y, m, 0).toISOString().slice(0, 10)
+        const isPastMonth = i > 0
+        for (const p of allPersonnel) {
+          if (p.termination_date && p.termination_date < mStart) continue
+          if (p.hire_date && p.hire_date > mEnd) continue
+          // Son ödeme günü kontrolü: geçmiş aylar her zaman borç,
+          // bu ay için yalnızca son_odeme_gunu geçmişse borç sayılır
+          const dueDay = p.son_odeme_gunu
+          if (!isPastMonth && dueDay && todayDay < dueDay) continue
+          const paid = (type: string) => allPersonnelPays.some((pay: any) =>
+            pay.personnel_id === p.id && pay.payment_type === type && pay.period_month === m && pay.period_year === y)
+          if (p.type === 'employee') {
+            if (Number(p.base_salary) > 0 && !paid('salary'))  personnelUnpaid += Number(p.base_salary)
+            if (Number(p.base_bonus)  > 0 && !paid('bonus'))   personnelUnpaid += Number(p.base_bonus)
+          } else {
+            const expected = Number(p.ara_odeme) || Number(p.base_salary) || 0
+            if (expected > 0 && !paid('freelance')) personnelUnpaid += expected
+          }
+        }
+      }
+
       const pendingReceivables = cariAlacak + noContactRec
-      const pendingPayables = cariBorc + noContactPay + subscriptionTotal
+      const pendingPayables = cariBorc + noContactPay + subscriptionTotal + personnelUnpaid
 
       const chartData = await Promise.all(
         Array.from({ length: 6 }).map(async (_, i) => {
@@ -175,10 +205,13 @@ export function DashboardPage() {
       const today = new Date().toISOString().slice(0, 10)
       const in30 = new Date(); in30.setDate(in30.getDate() + 30)
       const in30str = in30.toISOString().slice(0, 10)
-      const [contactsData, payData, subsData] = await Promise.all([
+      const nowD = new Date()
+      const [contactsData, payData, subsData, personnelData, personnelPayData] = await Promise.all([
         supabase.from('contacts').select('id,name,current_balance').eq('user_id', user.id).eq('is_active', true).lt('current_balance', 0).order('current_balance'),
         supabase.from('payables').select('id,description,amount,paid_amount,due_date,status').eq('user_id', user.id).in('status', ['pending', 'partial', 'overdue']).is('contact_id', null).order('due_date'),
         supabase.from('subscriptions').select('id,name,amount,billing_cycle,next_billing_date').eq('user_id', user.id).eq('status', 'active').order('next_billing_date'),
+        supabase.from('personnel').select('id,name,type,base_salary,base_bonus,ara_odeme,hire_date,termination_date,son_odeme_gunu').eq('user_id', user.id).eq('is_active', true),
+        supabase.from('personnel_payments').select('personnel_id,payment_type,period_month,period_year').eq('user_id', user.id),
       ])
       const contactItems: DetailItem[] = (contactsData.data ?? []).map((c: any) => ({
         id: c.id, label: c.name, sub: 'Cari Hesap Bakiyesi', amount: Math.abs(c.current_balance), negative: true,
@@ -188,14 +221,46 @@ export function DashboardPage() {
       }))
       const CYCLE_TR: Record<string, string> = { monthly: 'Aylık', quarterly: '3 Aylık', yearly: 'Yıllık' }
       const subItems: DetailItem[] = (subsData.data ?? []).map((s: any) => ({
-        id: s.id,
-        label: s.name,
-        sub: `Abonelik · ${CYCLE_TR[s.billing_cycle] ?? s.billing_cycle}`,
-        amount: s.amount,
-        date: s.next_billing_date && s.next_billing_date >= today ? s.next_billing_date : in30str,
-        negative: true,
+        id: s.id, label: s.name, sub: `Abonelik · ${CYCLE_TR[s.billing_cycle] ?? s.billing_cycle}`,
+        amount: s.amount, date: s.next_billing_date && s.next_billing_date >= today ? s.next_billing_date : in30str, negative: true,
       }))
-      setDetailItems([...contactItems, ...payItems, ...subItems])
+      // Ödenmemiş personel ödemeleri — son 3 ay
+      const personnelItems: DetailItem[] = []
+      const pList = (personnelData.data ?? []) as any[]
+      const pPays = (personnelPayData.data ?? []) as any[]
+      const MONTHS_TR = ['Ocak','Şubat','Mart','Nisan','Mayıs','Haziran','Temmuz','Ağustos','Eylül','Ekim','Kasım','Aralık']
+      const todayDayD = nowD.getDate()
+      for (let i = 0; i <= 2; i++) {
+        const d = subMonths(nowD, i)
+        const m = d.getMonth() + 1
+        const y = d.getFullYear()
+        const mLabel = `${MONTHS_TR[m-1]} ${y}`
+        const mStart = `${y}-${String(m).padStart(2,'0')}-01`
+        const mEnd = new Date(y, m, 0).toISOString().slice(0, 10)
+        const isPastMonth = i > 0
+        for (const p of pList) {
+          if (p.termination_date && p.termination_date < mStart) continue
+          if (p.hire_date && p.hire_date > mEnd) continue
+          const dueDay = p.son_odeme_gunu
+          if (!isPastMonth && dueDay && todayDayD < dueDay) continue
+          const paid = (ptype: string) => pPays.some((pay: any) =>
+            pay.personnel_id === p.id && pay.payment_type === ptype && pay.period_month === m && pay.period_year === y)
+          const dueDateStr = dueDay ? `${y}-${String(m).padStart(2,'0')}-${String(dueDay).padStart(2,'0')}` : undefined
+          const subLabel = dueDay ? `Personel · ${mLabel} · Son gün: ${dueDay}` : `Personel · ${mLabel}`
+          const subLabelFr = dueDay ? `Serbest Öğretmen · ${mLabel} · Son gün: ${dueDay}` : `Serbest Öğretmen · ${mLabel}`
+          if (p.type === 'employee') {
+            if (Number(p.base_salary) > 0 && !paid('salary'))
+              personnelItems.push({ id: `${p.id}-sal-${m}-${y}`, label: `${p.name} — Maaş`, sub: subLabel, amount: Number(p.base_salary), date: dueDateStr, negative: true })
+            if (Number(p.base_bonus) > 0 && !paid('bonus'))
+              personnelItems.push({ id: `${p.id}-bon-${m}-${y}`, label: `${p.name} — Prim`, sub: subLabel, amount: Number(p.base_bonus), date: dueDateStr, negative: true })
+          } else {
+            const expected = Number(p.ara_odeme) || Number(p.base_salary) || 0
+            if (expected > 0 && !paid('freelance'))
+              personnelItems.push({ id: `${p.id}-fr-${m}-${y}`, label: `${p.name} — Serbest Ödeme`, sub: subLabelFr, amount: expected, date: dueDateStr, negative: true })
+          }
+        }
+      }
+      setDetailItems([...contactItems, ...payItems, ...subItems, ...personnelItems])
     }
     setDetailLoading(false)
   }

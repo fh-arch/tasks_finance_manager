@@ -44,6 +44,7 @@ export function ContactDetailPage() {
   const [editForm, setEditForm] = useState({
     name: '', type: 'customer', email: '', phone: '', tax_number: '',
     tax_office: '', address: '', city: '', credit_limit: '', notes: '', is_active: true,
+    iban: '', bank_name: '',
   })
 
   const [entryForm, setEntryForm] = useState({
@@ -78,6 +79,7 @@ export function ContactDetailPage() {
         tax_office: contactData.tax_office ?? '', address: contactData.address ?? '',
         city: contactData.city ?? '', credit_limit: contactData.credit_limit?.toString() ?? '',
         notes: contactData.notes ?? '', is_active: contactData.is_active,
+        iban: (contactData as any).iban ?? '', bank_name: (contactData as any).bank_name ?? '',
       })
     }
 
@@ -110,6 +112,7 @@ export function ContactDetailPage() {
       address: editForm.address || null, city: editForm.city || null,
       credit_limit: editForm.credit_limit ? parseFloat(editForm.credit_limit) : null,
       notes: editForm.notes || null, is_active: editForm.is_active,
+      iban: editForm.iban || null, bank_name: editForm.bank_name || null,
     }).eq('id', contact.id)
     setEditMode(false)
     fetchAll()
@@ -293,6 +296,8 @@ export function ContactDetailPage() {
                   <div className="space-y-1.5"><Label>Vergi Dairesi</Label><Input value={editForm.tax_office} onChange={e => setE('tax_office', e.target.value)} /></div>
                   <div className="space-y-1.5"><Label>Kredi Limiti (₺)</Label><Input type="number" value={editForm.credit_limit} onChange={e => setE('credit_limit', e.target.value)} /></div>
                   <div className="col-span-2 space-y-1.5"><Label>Adres</Label><Textarea value={editForm.address} onChange={e => setE('address', e.target.value)} rows={2} /></div>
+                  <div className="space-y-1.5"><Label>Banka Adı</Label><Input value={editForm.bank_name} onChange={e => setE('bank_name', e.target.value)} placeholder="Ziraat, Garanti..." /></div>
+                  <div className="space-y-1.5"><Label>IBAN</Label><Input value={editForm.iban} onChange={e => setE('iban', e.target.value)} placeholder="TR00 0000..." /></div>
                   <div className="col-span-2 space-y-1.5"><Label>Notlar</Label><Textarea value={editForm.notes} onChange={e => setE('notes', e.target.value)} rows={2} /></div>
                 </div>
               ) : (
@@ -305,6 +310,8 @@ export function ContactDetailPage() {
                     ['Vergi Dairesi', contact.tax_office],
                     ['Kredi Limiti', contact.credit_limit ? contact.credit_limit.toLocaleString('tr-TR', { style: 'currency', currency: 'TRY' }) : null],
                     ['Adres', contact.address],
+                    ['Banka', (contact as any).bank_name],
+                    ['IBAN', (contact as any).iban],
                     ['Notlar', contact.notes],
                   ].map(([label, value]) => value ? (
                     <div key={label as string}>

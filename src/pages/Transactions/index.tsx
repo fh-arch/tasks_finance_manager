@@ -10,7 +10,8 @@ import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
 import { Textarea } from '@/components/ui/textarea'
-import { Plus, TrendingUp, TrendingDown, ArrowUpDown } from 'lucide-react'
+import { Plus, TrendingUp, TrendingDown, ArrowUpDown, Paperclip } from 'lucide-react'
+import { DocAttachButton } from '@/components/shared/DocAttachButton'
 
 type TxWithRel = Transaction & { contact_name?: string; category_name?: string }
 
@@ -97,7 +98,7 @@ export function TransactionsPage() {
         <table className="w-full text-sm">
           <thead className="bg-gradient-to-r from-gray-50 to-gray-50/50">
             <tr>
-              {['Tarih', 'Tür', 'Cari', 'Kategori', 'Açıklama', 'Tutar', 'Durum'].map((h) => (
+              {['Tarih', 'Tür', 'Cari', 'Kategori', 'Açıklama', 'Tutar', 'Durum', 'Belge'].map((h) => (
                 <th key={h} className="px-5 py-3.5 text-left text-xs font-semibold text-muted-foreground uppercase tracking-wide">{h}</th>
               ))}
             </tr>
@@ -113,21 +114,24 @@ export function TransactionsPage() {
               </tr>
             )}
             {items.map((t) => (
-              <tr key={t.id} className="border-b border-border/40 hover:bg-primary/[0.02] transition-colors cursor-pointer" onClick={() => { setEditing(t); setShowForm(true) }}>
-                <td className="px-5 py-3 text-muted-foreground">{formatDate(t.transaction_date)}</td>
-                <td className="px-5 py-3">
+              <tr key={t.id} className="border-b border-border/40 hover:bg-primary/[0.02] transition-colors">
+                <td className="px-5 py-3 text-muted-foreground cursor-pointer" onClick={() => { setEditing(t); setShowForm(true) }}>{formatDate(t.transaction_date)}</td>
+                <td className="px-5 py-3 cursor-pointer" onClick={() => { setEditing(t); setShowForm(true) }}>
                   {t.type === 'income'
                     ? <span className="inline-flex items-center gap-1.5 text-xs font-medium text-emerald-700 bg-emerald-50 px-2.5 py-1 rounded-full"><TrendingUp className="h-3 w-3" /> Gelir</span>
                     : <span className="inline-flex items-center gap-1.5 text-xs font-medium text-red-700 bg-red-50 px-2.5 py-1 rounded-full"><TrendingDown className="h-3 w-3" /> Gider</span>
                   }
                 </td>
-                <td className="px-5 py-3 text-muted-foreground">{t.contact_name ?? '—'}</td>
-                <td className="px-5 py-3 text-muted-foreground">{t.category_name ?? '—'}</td>
-                <td className="px-5 py-3 max-w-[200px] truncate font-medium">{t.description ?? '—'}</td>
-                <td className="px-5 py-3 text-right">
+                <td className="px-5 py-3 text-muted-foreground cursor-pointer" onClick={() => { setEditing(t); setShowForm(true) }}>{t.contact_name ?? '—'}</td>
+                <td className="px-5 py-3 text-muted-foreground cursor-pointer" onClick={() => { setEditing(t); setShowForm(true) }}>{t.category_name ?? '—'}</td>
+                <td className="px-5 py-3 max-w-[200px] truncate font-medium cursor-pointer" onClick={() => { setEditing(t); setShowForm(true) }}>{t.description ?? '—'}</td>
+                <td className="px-5 py-3 text-right cursor-pointer" onClick={() => { setEditing(t); setShowForm(true) }}>
                   <AmountDisplay amount={t.amount} positive={t.type === 'income'} negative={t.type === 'expense'} />
                 </td>
-                <td className="px-5 py-3"><StatusBadge status={t.status} /></td>
+                <td className="px-5 py-3 cursor-pointer" onClick={() => { setEditing(t); setShowForm(true) }}><StatusBadge status={t.status} /></td>
+                <td className="px-5 py-3" onClick={e => e.stopPropagation()}>
+                  <DocAttachButton relatedType="transaction" relatedId={t.id} />
+                </td>
               </tr>
             ))}
           </tbody>

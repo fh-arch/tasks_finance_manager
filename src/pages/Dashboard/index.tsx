@@ -88,20 +88,20 @@ export function DashboardPage() {
       const allPersonnelPays = (personnelPayRes.data ?? []) as any[]
       let personnelUnpaid = 0
       const todayDay = now.getDate()
+      const CUTOFF_YEAR = 2026; const CUTOFF_MONTH = 5 // Mayıs 2026 öncesi sayılmaz
       for (let i = 0; i <= 2; i++) {
         const d = subMonths(now, i)
         const m = d.getMonth() + 1
         const y = d.getFullYear()
+        if (y < CUTOFF_YEAR || (y === CUTOFF_YEAR && m < CUTOFF_MONTH)) continue
         const mStart = `${y}-${String(m).padStart(2,'0')}-01`
         const mEnd = new Date(y, m, 0).toISOString().slice(0, 10)
         const isPastMonth = i > 0
         for (const p of allPersonnel) {
           if (p.termination_date && p.termination_date < mStart) continue
           if (p.hire_date && p.hire_date > mEnd) continue
-          // Son ödeme günü kontrolü: geçmiş aylar her zaman borç,
-          // bu ay için yalnızca son_odeme_gunu geçmişse borç sayılır
-          const dueDay = p.son_odeme_gunu
-          if (!isPastMonth && dueDay && todayDay < dueDay) continue
+          const dueDay = p.son_odeme_gunu ?? 20
+          if (!isPastMonth && todayDay < dueDay) continue
           const paid = (type: string) => allPersonnelPays.some((pay: any) =>
             pay.personnel_id === p.id && pay.payment_type === type && pay.period_month === m && pay.period_year === y)
           if (p.type === 'employee') {
@@ -230,10 +230,12 @@ export function DashboardPage() {
       const pPays = (personnelPayData.data ?? []) as any[]
       const MONTHS_TR = ['Ocak','Şubat','Mart','Nisan','Mayıs','Haziran','Temmuz','Ağustos','Eylül','Ekim','Kasım','Aralık']
       const todayDayD = nowD.getDate()
+      const CY = 2026; const CM = 5
       for (let i = 0; i <= 2; i++) {
         const d = subMonths(nowD, i)
         const m = d.getMonth() + 1
         const y = d.getFullYear()
+        if (y < CY || (y === CY && m < CM)) continue
         const mLabel = `${MONTHS_TR[m-1]} ${y}`
         const mStart = `${y}-${String(m).padStart(2,'0')}-01`
         const mEnd = new Date(y, m, 0).toISOString().slice(0, 10)
@@ -241,8 +243,8 @@ export function DashboardPage() {
         for (const p of pList) {
           if (p.termination_date && p.termination_date < mStart) continue
           if (p.hire_date && p.hire_date > mEnd) continue
-          const dueDay = p.son_odeme_gunu
-          if (!isPastMonth && dueDay && todayDayD < dueDay) continue
+          const dueDay = p.son_odeme_gunu ?? 20
+          if (!isPastMonth && todayDayD < dueDay) continue
           const paid = (ptype: string) => pPays.some((pay: any) =>
             pay.personnel_id === p.id && pay.payment_type === ptype && pay.period_month === m && pay.period_year === y)
           const dueDateStr = dueDay ? `${y}-${String(m).padStart(2,'0')}-${String(dueDay).padStart(2,'0')}` : undefined

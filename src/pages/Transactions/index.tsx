@@ -106,7 +106,7 @@ export function TransactionsPage() {
           <tbody>
             {items.length === 0 && (
               <tr>
-                <td colSpan={7} className="py-16 text-center">
+                <td colSpan={8} className="py-16 text-center">
                   <ArrowUpDown className="h-12 w-12 text-muted-foreground/25 mx-auto mb-3" />
                   <h3 className="text-sm font-semibold text-gray-900 mb-1">İşlem bulunamadı</h3>
                   <p className="text-xs text-muted-foreground">Yeni işlem eklemek için yukarıdaki butona tıklayın.</p>
@@ -164,6 +164,7 @@ function TransactionForm({ contacts, categories, item, onSave, onClose }: {
     notes: item?.notes ?? '',
   })
   const [loading, setLoading] = useState(false)
+  const [savedId, setSavedId] = useState<string | null>(item?.id ?? null)
   const set = (k: string, v: string) => setForm((f) => ({ ...f, [k]: v }))
 
   const handleSave = async () => {
@@ -181,22 +182,19 @@ function TransactionForm({ contacts, categories, item, onSave, onClose }: {
       await supabase.from('transactions').update(payload).eq('id', item.id)
     } else {
       const { data: inserted } = await supabase.from('transactions').insert(payload).select().single()
-      // Cari hareketi: tamamlandıysa ve cari seçildiyse current_account_entries'e yaz
       if (inserted && form.contact_id && form.status === 'completed') {
         await supabase.from('current_account_entries').insert({
-          user_id: user.id,
-          contact_id: form.contact_id,
-          // income = onlar bize ödedi (alacak azaldı = credit) / expense = biz onlara ödedik (borç azaldı = debit)
+          user_id: user.id, contact_id: form.contact_id,
           entry_type: form.type === 'income' ? 'credit' : 'debit',
           amount: parseFloat(form.amount),
           description: form.description || (form.type === 'income' ? 'Gelir işlemi' : 'Gider işlemi'),
-          entry_date: form.transaction_date,
-          related_type: 'transaction',
-          related_id: inserted.id,
+          entry_date: form.transaction_date, related_type: 'transaction', related_id: inserted.id,
         })
       }
+      if (inserted) setSavedId(inserted.id)
     }
-    setLoading(false); onSave()
+    setLoading(false)
+    if (item) onSave() // düzenleme modunda direkt kapat
   }
 
   const filteredCats = categories.filter((c) => c.type === form.type)
@@ -253,10 +251,28 @@ function TransactionForm({ contacts, categories, item, onSave, onClose }: {
             </p>
           )}
           <div className="space-y-1.5"><Label>Notlar</Label><Textarea value={form.notes} onChange={(e) => set('notes', e.target.value)} rows={2} /></div>
+
+          {/* Dekont yükleme — yeni kayıt sonrası veya düzenleme modunda */}
+          {savedId && (
+            <div className="border border-dashed border-gray-200 rounded-xl p-3 space-y-2 bg-gray-50/60">
+              <div className="flex items-center gap-2">
+                <Paperclip className="h-4 w-4 text-gray-400" />
+                <span className="text-xs font-semibold text-gray-600">Dekont / Belge Ekle</span>
+              </div>
+              <DocAttachButton relatedType="transaction" relatedId={savedId} label="Dekont Yükle" />
+            </div>
+          )}
         </div>
         <DialogFooter>
-          <Button variant="outline" onClick={onClose}>İptal</Button>
-          <Button onClick={handleSave} disabled={loading || !form.amount}>Kaydet</Button>
+          <Button variant="outline" onClick={onClose}>{savedId && !item ? 'Kapat' : 'İptal'}</Button>
+          {(!savedId || item) && (
+            <Button onClick={handleSave} disabled={loading || !form.amount}>
+              {loading ? 'Kaydediliyor...' : 'Kaydet'}
+            </Button>
+          )}
+          {savedId && !item && (
+            <Button onClick={onSave}>Tamamla</Button>
+          )}
         </DialogFooter>
       </DialogContent>
     </Dialog>

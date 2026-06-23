@@ -56,6 +56,7 @@ export function PersonnelPage() {
   const [expandedDocId, setExpandedDocId] = useState<string | null>(null)
   const [editingPerson, setEditingPerson] = useState<Personnel | null>(null)
   const [showPayForm, setShowPayForm] = useState(false)
+  const [editingPayment, setEditingPayment] = useState<Payment | null>(null)
   const [saving, setSaving] = useState(false)
   const [markingId, setMarkingId] = useState<string | null>(null)
 
@@ -221,23 +222,42 @@ export function PersonnelPage() {
     const amount = parseFloat(payForm.amount)
     const person = personnel.find(p => p.id === payForm.personnel_id)
     const label = `${PAYMENT_TYPE_LABELS[payForm.payment_type]}: ${person?.name ?? ''}${payForm.description ? ' — ' + payForm.description : ''}`
-
-    await Promise.all([
-      supabase.from('personnel_payments').insert({
-        user_id: user.id, personnel_id: payForm.personnel_id, payment_type: payForm.payment_type,
-        amount, payment_date: payForm.payment_date,
-        period_month: parseInt(payForm.period_month) || null,
-        period_year: parseInt(payForm.period_year) || null,
-        description: payForm.description || null, notes: payForm.notes || null,
-      }),
-      supabase.from('transactions').insert({
-        user_id: user.id, type: 'expense', amount, description: label,
-        transaction_date: payForm.payment_date, status: 'completed', currency: 'TRY',
-      }),
-    ])
-    setSaving(false); setShowPayForm(false)
+    const payloadData = {
+      personnel_id: payForm.personnel_id, payment_type: payForm.payment_type,
+      amount, payment_date: payForm.payment_date,
+      period_month: parseInt(payForm.period_month) || null,
+      period_year: parseInt(payForm.period_year) || null,
+      description: payForm.description || null, notes: payForm.notes || null,
+    }
+    if (editingPayment) {
+      await supabase.from('personnel_payments').update(payloadData).eq('id', editingPayment.id)
+    } else {
+      await Promise.all([
+        supabase.from('personnel_payments').insert({ user_id: user.id, ...payloadData }),
+        supabase.from('transactions').insert({
+          user_id: user.id, type: 'expense', amount, description: label,
+          transaction_date: payForm.payment_date, status: 'completed', currency: 'TRY',
+        }),
+      ])
+    }
+    setSaving(false); setShowPayForm(false); setEditingPayment(null)
     setPayForm(f => ({ ...f, amount: '', description: '', notes: '', personnel_id: '' }))
     fetchAll()
+  }
+
+  const openPayEdit = (pay: Payment) => {
+    setEditingPayment(pay)
+    setPayForm({
+      personnel_id: pay.personnel_id,
+      payment_type: pay.payment_type,
+      amount: String(pay.amount),
+      payment_date: pay.payment_date,
+      period_month: pay.period_month ? String(pay.period_month) : String(now.getMonth() + 1),
+      period_year: pay.period_year ? String(pay.period_year) : String(now.getFullYear()),
+      description: pay.description ?? '',
+      notes: pay.notes ?? '',
+    })
+    setShowPayForm(true)
   }
 
   const handleDeletePayment = async (id: string) => {
@@ -540,9 +560,14 @@ export function PersonnelPage() {
                       <DocAttachButton relatedType="personnel_payment" relatedId={pay.id} />
                     </td>
                     <td className="px-4 py-2.5">
-                      <Button variant="ghost" size="icon" className="h-7 w-7 text-red-400 hover:text-red-600 hover:bg-red-50" onClick={() => handleDeletePayment(pay.id)}>
-                        <Trash2 className="h-3.5 w-3.5" />
-                      </Button>
+                      <div className="flex items-center gap-0.5">
+                        <Button variant="ghost" size="icon" className="h-7 w-7 text-blue-400 hover:text-blue-600 hover:bg-blue-50" onClick={() => openPayEdit(pay)}>
+                          <Pencil className="h-3.5 w-3.5" />
+                        </Button>
+                        <Button variant="ghost" size="icon" className="h-7 w-7 text-red-400 hover:text-red-600 hover:bg-red-50" onClick={() => handleDeletePayment(pay.id)}>
+                          <Trash2 className="h-3.5 w-3.5" />
+                        </Button>
+                      </div>
                     </td>
                   </tr>
                 )
@@ -779,6 +804,9 @@ export function PersonnelPage() {
                                 <td className="px-5 py-2.5 w-16">
                                   <div className="flex items-center gap-0.5 justify-end">
                                     <DocAttachButton relatedType="personnel_payment" relatedId={pay.id} />
+                                    <Button variant="ghost" size="icon" className="h-7 w-7 text-blue-400 hover:text-blue-600 hover:bg-blue-50" onClick={() => openPayEdit(pay)}>
+                                      <Pencil className="h-3.5 w-3.5" />
+                                    </Button>
                                     <Button variant="ghost" size="icon" className="h-7 w-7 text-red-400 hover:text-red-600 hover:bg-red-50" onClick={() => handleDeletePayment(pay.id)}>
                                       <Trash2 className="h-3.5 w-3.5" />
                                     </Button>
@@ -904,13 +932,13 @@ export function PersonnelPage() {
 
       {/* ── Manual Pay Form ── */}
       {showPayForm && (
-        <Dialog open onOpenChange={() => setShowPayForm(false)}>
+        <Dialog open onOpenChange={() => { setShowPayForm(false); setEditingPayment(null) }}>
           <DialogContent className="max-w-sm">
-            <DialogHeader><DialogTitle>Manuel Ödeme Ekle</DialogTitle></DialogHeader>
+            <DialogHeader><DialogTitle>{editingPayment ? 'Ödeme Düzenle' : 'Manuel Ödeme Ekle'}</DialogTitle></DialogHeader>
             <div className="space-y-3">
               <div className="space-y-1.5">
                 <Label>Personel *</Label>
-                <Select value={payForm.personnel_id} onValueChange={v => {
+                <Select value={payForm.personnel_id} disabled={!!editingPayment} onValueChange={v => {
                   const p = personnel.find(x => x.id === v)
                   setPayForm(f => ({ ...f, personnel_id: v, payment_type: p?.type === 'freelance' ? 'freelance' : 'salary' }))
                 }}>
@@ -963,7 +991,7 @@ export function PersonnelPage() {
               <div className="space-y-1.5"><Label>Açıklama</Label><Input value={payForm.description} onChange={e => setPayForm(f => ({ ...f, description: e.target.value }))} /></div>
             </div>
             <DialogFooter>
-              <Button variant="outline" onClick={() => setShowPayForm(false)}>İptal</Button>
+              <Button variant="outline" onClick={() => { setShowPayForm(false); setEditingPayment(null) }}>İptal</Button>
               <Button onClick={handleSavePayment} disabled={saving || !payForm.personnel_id || !payForm.amount}>
                 {saving ? 'Kaydediliyor...' : 'Kaydet'}
               </Button>

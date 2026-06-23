@@ -83,25 +83,21 @@ export function DashboardPage() {
       const noContactPay = (payNoContact.data ?? []).reduce((s, r) => s + (r.amount - (r.paid_amount ?? 0)), 0)
       const subscriptionTotal = (allSubsRes.data ?? []).reduce((s: number, sub: any) => s + sub.amount, 0)
 
-      // Ödenmemiş personel ödemeleri — son 3 ay
+      // Ödenmemiş personel ödemeleri — mevcut ay SAYILMAZ (haziran maaşı temmuz 20'de ödenir, temmuz 1'den önce gösterilmez)
       const allPersonnel = (personnelRes.data ?? []) as any[]
       const allPersonnelPays = (personnelPayRes.data ?? []) as any[]
       let personnelUnpaid = 0
-      const todayDay = now.getDate()
-      const CUTOFF_YEAR = 2026; const CUTOFF_MONTH = 5 // Mayıs 2026 öncesi sayılmaz
-      for (let i = 0; i <= 2; i++) {
+      const CUTOFF_YEAR = 2026; const CUTOFF_MONTH = 5
+      for (let i = 1; i <= 2; i++) {
         const d = subMonths(now, i)
         const m = d.getMonth() + 1
         const y = d.getFullYear()
         if (y < CUTOFF_YEAR || (y === CUTOFF_YEAR && m < CUTOFF_MONTH)) continue
         const mStart = `${y}-${String(m).padStart(2,'0')}-01`
         const mEnd = new Date(y, m, 0).toISOString().slice(0, 10)
-        const isPastMonth = i > 0
         for (const p of allPersonnel) {
           if (p.termination_date && p.termination_date < mStart) continue
           if (p.hire_date && p.hire_date > mEnd) continue
-          const dueDay = p.son_odeme_gunu ?? 20
-          if (!isPastMonth && todayDay < dueDay) continue
           const paid = (type: string) => allPersonnelPays.some((pay: any) =>
             pay.personnel_id === p.id && pay.payment_type === type && pay.period_month === m && pay.period_year === y)
           if (p.type === 'employee') {
@@ -224,14 +220,13 @@ export function DashboardPage() {
         id: s.id, label: s.name, sub: `Abonelik · ${CYCLE_TR[s.billing_cycle] ?? s.billing_cycle}`,
         amount: s.amount, date: s.next_billing_date && s.next_billing_date >= today ? s.next_billing_date : in30str, negative: true,
       }))
-      // Ödenmemiş personel ödemeleri — son 3 ay
+      // Mevcut ay (i=0) SAYILMAZ — haziran maaşı temmuz 20'de ödenir, temmuz 1'den önce borç gösterilmez
       const personnelItems: DetailItem[] = []
       const pList = (personnelData.data ?? []) as any[]
       const pPays = (personnelPayData.data ?? []) as any[]
       const MONTHS_TR = ['Ocak','Şubat','Mart','Nisan','Mayıs','Haziran','Temmuz','Ağustos','Eylül','Ekim','Kasım','Aralık']
-      const todayDayD = nowD.getDate()
       const CY = 2026; const CM = 5
-      for (let i = 0; i <= 2; i++) {
+      for (let i = 1; i <= 2; i++) {
         const d = subMonths(nowD, i)
         const m = d.getMonth() + 1
         const y = d.getFullYear()
@@ -239,17 +234,19 @@ export function DashboardPage() {
         const mLabel = `${MONTHS_TR[m-1]} ${y}`
         const mStart = `${y}-${String(m).padStart(2,'0')}-01`
         const mEnd = new Date(y, m, 0).toISOString().slice(0, 10)
-        const isPastMonth = i > 0
+        // Son ödeme günü bir sonraki ayda: haziran maaşı temmuz 20
+        const dueMonth = m === 12 ? 1 : m + 1
+        const dueYear = m === 12 ? y + 1 : y
+        const dueDay = (p: any) => p.son_odeme_gunu ?? 20
         for (const p of pList) {
           if (p.termination_date && p.termination_date < mStart) continue
           if (p.hire_date && p.hire_date > mEnd) continue
-          const dueDay = p.son_odeme_gunu ?? 20
-          if (!isPastMonth && todayDayD < dueDay) continue
           const paid = (ptype: string) => pPays.some((pay: any) =>
             pay.personnel_id === p.id && pay.payment_type === ptype && pay.period_month === m && pay.period_year === y)
-          const dueDateStr = dueDay ? `${y}-${String(m).padStart(2,'0')}-${String(dueDay).padStart(2,'0')}` : undefined
-          const subLabel = dueDay ? `Personel · ${mLabel} · Son gün: ${dueDay}` : `Personel · ${mLabel}`
-          const subLabelFr = dueDay ? `Serbest Öğretmen · ${mLabel} · Son gün: ${dueDay}` : `Serbest Öğretmen · ${mLabel}`
+          const dd = dueDay(p)
+          const dueDateStr = `${dueYear}-${String(dueMonth).padStart(2,'0')}-${String(dd).padStart(2,'0')}`
+          const subLabel = `Personel · ${mLabel} · Son gün: ${dd} ${MONTHS_TR[dueMonth-1]}`
+          const subLabelFr = `Serbest Öğretmen · ${mLabel} · Son gün: ${dd} ${MONTHS_TR[dueMonth-1]}`
           if (p.type === 'employee') {
             if (Number(p.base_salary) > 0 && !paid('salary'))
               personnelItems.push({ id: `${p.id}-sal-${m}-${y}`, label: `${p.name} — Maaş`, sub: subLabel, amount: Number(p.base_salary), date: dueDateStr, negative: true })

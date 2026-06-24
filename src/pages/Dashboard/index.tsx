@@ -87,7 +87,7 @@ export function DashboardPage() {
       const allPersonnel = (personnelRes.data ?? []) as any[]
       const allPersonnelPays = (personnelPayRes.data ?? []) as any[]
       let personnelUnpaid = 0
-      const CUTOFF_YEAR = 2026; const CUTOFF_MONTH = 4
+      const CUTOFF_YEAR = 2026; const CUTOFF_MONTH = 5
       for (let i = 1; i <= 2; i++) {
         const d = subMonths(now, i)
         const m = d.getMonth() + 1
@@ -225,7 +225,7 @@ export function DashboardPage() {
       const pList = (personnelData.data ?? []) as any[]
       const pPays = (personnelPayData.data ?? []) as any[]
       const MONTHS_TR = ['Ocak','Şubat','Mart','Nisan','Mayıs','Haziran','Temmuz','Ağustos','Eylül','Ekim','Kasım','Aralık']
-      const CY = 2026; const CM = 4
+      const CY = 2026; const CM = 5
       for (let i = 1; i <= 2; i++) {
         const d = subMonths(nowD, i)
         const m = d.getMonth() + 1

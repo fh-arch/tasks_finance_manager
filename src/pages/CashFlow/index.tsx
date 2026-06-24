@@ -92,6 +92,7 @@ export function CashFlowPage() {
   const [receivables, setReceivables] = useState<(Receivable & { contact_name?: string })[]>([])
   const [payables, setPayables] = useState<(Payable & { contact_name?: string })[]>([])
   const [subscriptions, setSubscriptions] = useState<{ id: string; name: string; amount: number; next_billing_date: string | null }[]>([])
+  const [custSubs, setCustSubs] = useState<{ id: string; amount: number; billing_day: number | null; status: string }[]>([])
   const [categories, setCategories] = useState<Category[]>([])
   const [loading, setLoading] = useState(true)
   const [search, setSearch] = useState('')
@@ -103,18 +104,20 @@ export function CashFlowPage() {
   useEffect(() => {
     const fetchAll = async () => {
       setLoading(true)
-      const [t, r, p, c, s] = await Promise.all([
+      const [t, r, p, c, s, cs] = await Promise.all([
         supabase.from('transactions').select('*').eq('status', 'completed').order('transaction_date', { ascending: false }),
         supabase.from('receivables').select('*, contacts(name)').order('due_date'),
         supabase.from('payables').select('*, contacts(name)').order('due_date'),
         supabase.from('categories').select('*'),
         supabase.from('subscriptions').select('id,name,amount,next_billing_date').eq('status', 'active'),
+        supabase.from('customer_subscriptions').select('id,amount,billing_day,status').eq('status', 'active'),
       ])
       setTransactions((t.data ?? []) as Transaction[])
       setReceivables((r.data ?? []).map((x: any) => ({ ...x, contact_name: x.contacts?.name })))
       setPayables((p.data ?? []).map((x: any) => ({ ...x, contact_name: x.contacts?.name })))
       setCategories((c.data ?? []) as Category[])
       setSubscriptions((s.data ?? []) as { id: string; name: string; amount: number; next_billing_date: string | null }[])
+      setCustSubs((cs.data ?? []) as { id: string; amount: number; billing_day: number | null; status: string }[])
       setLoading(false)
     }
     fetchAll()
@@ -212,43 +215,61 @@ export function CashFlowPage() {
       const d = new Date(now.getFullYear(), now.getMonth() + i, 1)
       months.push(d.toISOString().slice(0, 7))
     }
-    // Aylık abonelik gideri (recurring)
-    const monthlySubCost = subscriptions.reduce((acc, s) => {
-      if (s.next_billing_date === null) return acc // billing_cycle unknown - skip type refinement
-      return acc // handled below per-month
-    }, 0)
-    void monthlySubCost
 
     return months.map(ym => {
       const mStart = `${ym}-01`
       const mEnd = new Date(parseInt(ym.slice(0,4)), parseInt(ym.slice(5,7)), 0).toISOString().slice(0, 10)
 
+      // Normal alacaklar (customer_subscription kaynaklılar hariç — aşağıda ayrıca eklenir)
       const projInc = receivables
-        .filter(r => r.status !== 'paid' && r.due_date && r.due_date >= mStart && r.due_date <= mEnd)
+        .filter(r => r.status !== 'paid' && r.due_date && r.due_date >= mStart && r.due_date <= mEnd
+          && (r as any).source_type !== 'customer_subscription')
         .reduce((s, r) => s + (r.amount - r.paid_amount), 0)
+
+      // Müşteri abonelik geliri:
+      // DB'de o aya ait alacak kaydı varsa onu kullan; yoksa abonelik tutarını doğrudan ekle
+      const custSubInc = custSubs.reduce((acc, cs) => {
+        const hasRec = receivables.some(r =>
+          (r as any).source_id === cs.id &&
+          (r as any).source_type === 'customer_subscription' &&
+          r.due_date && r.due_date >= mStart && r.due_date <= mEnd
+        )
+        if (hasRec) {
+          // Zaten projInc'te sayılmıyor (source_type filtresi), o alacağı buraya ekle
+          const rec = receivables.find(r =>
+            (r as any).source_id === cs.id &&
+            (r as any).source_type === 'customer_subscription' &&
+            r.due_date && r.due_date >= mStart && r.due_date <= mEnd &&
+            r.status !== 'paid'
+          )
+          return acc + (rec ? rec.amount - rec.paid_amount : 0)
+        }
+        // Alacak kaydı yoksa abonelik tutarını planla
+        return acc + cs.amount
+      }, 0)
 
       const projPayRec = payables
         .filter(p => p.status !== 'paid' && p.due_date && p.due_date >= mStart && p.due_date <= mEnd)
         .reduce((s, p) => s + (p.amount - p.paid_amount), 0)
 
-      // Abonelik giderleri: next_billing_date bu aya düşüyorsa veya aktif aylık ise
       const subCost = subscriptions.reduce((acc, s) => {
         const nextDate = s.next_billing_date
-        if (!nextDate) return acc + s.amount // aylık saydır
+        if (!nextDate) return acc + s.amount
         if (nextDate >= mStart && nextDate <= mEnd) return acc + s.amount
         return acc
       }, 0)
 
+      const totalInc = projInc + custSubInc
       const projExp = projPayRec + subCost
       return {
         month: monthLabel(ym),
-        projectedIncome: projInc,
+        projectedIncome: totalInc,
         projectedExpense: projExp,
-        projectedNet: projInc - projExp,
+        projectedNet: totalInc - projExp,
         isFuture: ym > now.toISOString().slice(0, 7),
       }
     })
-  }, [receivables, payables, subscriptions])
+  }, [receivables, payables, subscriptions, custSubs])
 
   if (loading) return (
     <div className="flex items-center justify-center py-24">

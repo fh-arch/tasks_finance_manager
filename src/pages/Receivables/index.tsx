@@ -30,6 +30,8 @@ export function ReceivablesPage() {
   const [payAmount, setPayAmount] = useState('')
   const [showCustForm, setShowCustForm] = useState(false)
   const [editingCust, setEditingCust] = useState<CustSubWithContact | null>(null)
+  const [subPayTarget, setSubPayTarget] = useState<{ cs: CustSubWithContact; rec: RecWithContact } | null>(null)
+  const [subPayAmount, setSubPayAmount] = useState('')
 
   const fetchAll = async () => {
     const today = new Date().toISOString().slice(0, 10)
@@ -49,6 +51,37 @@ export function ReceivablesPage() {
     setCariAlacaklar(ca.data ?? [])
     setCustSubs((cs.data ?? []).map((x: any) => ({ ...x, contact_name: x.contacts?.name })))
     setLoading(false)
+  }
+
+  const handleDeleteRec = async (id: string) => {
+    if (!confirm('Bu alacak kaydı silinecek. Emin misiniz?')) return
+    await supabase.from('receivables').delete().eq('id', id)
+    fetchAll()
+  }
+
+  const handleSubPay = async () => {
+    if (!subPayTarget) return
+    const { cs, rec } = subPayTarget
+    const paid = parseFloat(subPayAmount)
+    const newPaid = rec.paid_amount + paid
+    const newStatus = newPaid >= rec.amount ? 'paid' : 'partial'
+    const { data: { user } } = await supabase.auth.getUser()
+    if (!user) return
+    const today = new Date().toISOString().slice(0, 10)
+    await supabase.from('receivables').update({ paid_amount: newPaid, status: newStatus }).eq('id', rec.id)
+    if (cs.contact_id) {
+      await supabase.from('current_account_entries').insert({
+        user_id: user.id, contact_id: cs.contact_id, entry_type: 'credit',
+        amount: paid, description: `Abonelik tahsilatı: ${cs.plan_name} — ${rec.description ?? ''}`,
+        entry_date: today, related_type: 'receivable', related_id: rec.id,
+      })
+      await supabase.from('transactions').insert({
+        user_id: user.id, type: 'income', contact_id: cs.contact_id,
+        amount: paid, description: `Abonelik tahsilatı: ${cs.plan_name}`,
+        transaction_date: today, status: 'completed', currency: 'TRY',
+      })
+    }
+    setSubPayTarget(null); setSubPayAmount(''); fetchAll()
   }
 
   const handleDeleteCust = async (id: string) => {
@@ -183,6 +216,9 @@ export function ReceivablesPage() {
                     <Button variant="ghost" size="icon" className="h-7 w-7 text-muted-foreground hover:text-foreground" onClick={() => { setEditing(r); setShowForm(true) }}>
                       <Pencil className="h-3.5 w-3.5" />
                     </Button>
+                    <Button variant="ghost" size="icon" className="h-7 w-7 text-red-400 hover:text-red-600 hover:bg-red-50" onClick={() => handleDeleteRec(r.id)}>
+                      <Trash2 className="h-3.5 w-3.5" />
+                    </Button>
                     <DocAttachButton relatedType="receivable" relatedId={r.id} />
                     {r.status !== 'paid' && (
                       <Button variant="ghost" size="icon" className="h-7 w-7 text-emerald-600 hover:text-emerald-700 hover:bg-emerald-50" onClick={() => { setPayTarget(r); setPayAmount('') }}>
@@ -255,7 +291,7 @@ export function ReceivablesPage() {
         <table className="w-full text-sm">
           <thead className="bg-emerald-50/30">
             <tr>
-              {['Müşteri', 'Plan', 'Ödeme Günü', 'Tutar', 'Başlangıç', 'Durum', ''].map(h => (
+              {['Müşteri', 'Plan', 'Ödeme Günü', 'Tutar', 'Sonraki Vade', 'Durum', ''].map(h => (
                 <th key={h} className="px-5 py-2.5 text-left text-xs font-semibold text-emerald-700 uppercase tracking-wide">{h}</th>
               ))}
             </tr>
@@ -267,30 +303,48 @@ export function ReceivablesPage() {
                 Henüz müşteri aboneliği yok
               </td></tr>
             )}
-            {custSubs.map(cs => (
-              <tr key={cs.id} className="border-b border-emerald-50 hover:bg-emerald-50/20 transition-colors">
-                <td className="px-5 py-2.5 font-medium">{cs.contact_name ?? '—'}</td>
-                <td className="px-5 py-2.5 text-muted-foreground">{cs.plan_name}</td>
-                <td className="px-5 py-2.5 text-muted-foreground">Her ayın {(cs as any).billing_day ?? 1}'i</td>
-                <td className="px-5 py-2.5"><AmountDisplay amount={cs.amount} positive className="font-semibold" /></td>
-                <td className="px-5 py-2.5 text-muted-foreground">{cs.start_date ? new Date(cs.start_date).toLocaleDateString('tr-TR', { month: 'short', year: 'numeric' }) : '—'}</td>
-                <td className="px-5 py-2.5">
-                  <span className={`inline-flex px-2 py-0.5 rounded-full text-xs font-medium ${cs.status === 'active' ? 'bg-emerald-50 text-emerald-700' : cs.status === 'cancelled' ? 'bg-red-50 text-red-700' : 'bg-gray-100 text-gray-600'}`}>
-                    {cs.status === 'active' ? 'Aktif' : cs.status === 'cancelled' ? 'İptal' : cs.status === 'paused' ? 'Durduruldu' : cs.status}
-                  </span>
-                </td>
-                <td className="px-5 py-2.5">
-                  <div className="flex items-center gap-0.5">
-                    <Button variant="ghost" size="icon" className="h-7 w-7 text-muted-foreground hover:text-foreground" onClick={() => { setEditingCust(cs); setShowCustForm(true) }}>
-                      <Pencil className="h-3.5 w-3.5" />
-                    </Button>
-                    <Button variant="ghost" size="icon" className="h-7 w-7 text-red-400 hover:text-red-600 hover:bg-red-50" onClick={() => handleDeleteCust(cs.id)}>
-                      <Trash2 className="h-3.5 w-3.5" />
-                    </Button>
-                  </div>
-                </td>
-              </tr>
-            ))}
+            {custSubs.map(cs => {
+              // Bu aboneliğin en yakın ödenmemiş alacağı
+              const nextRec = items
+                .filter(r => (r as any).source_id === cs.id && (r as any).source_type === 'customer_subscription' && r.status !== 'paid')
+                .sort((a, b) => (a.due_date ?? '').localeCompare(b.due_date ?? ''))[0]
+              return (
+                <tr key={cs.id} className="border-b border-emerald-50 hover:bg-emerald-50/20 transition-colors">
+                  <td className="px-5 py-2.5 font-medium">{cs.contact_name ?? '—'}</td>
+                  <td className="px-5 py-2.5 text-muted-foreground">{cs.plan_name}</td>
+                  <td className="px-5 py-2.5 text-muted-foreground">Her ayın {(cs as any).billing_day ?? 1}'i</td>
+                  <td className="px-5 py-2.5"><AmountDisplay amount={cs.amount} positive className="font-semibold" /></td>
+                  <td className="px-5 py-2.5 text-muted-foreground">
+                    {nextRec
+                      ? <span className={`text-xs font-medium ${nextRec.status === 'overdue' ? 'text-red-600' : 'text-amber-600'}`}>
+                          {nextRec.status === 'overdue' ? '⚠ ' : ''}{nextRec.due_date ? new Date(nextRec.due_date).toLocaleDateString('tr-TR', { day: 'numeric', month: 'short' }) : '—'}
+                        </span>
+                      : <span className="text-xs text-emerald-600 font-medium">✓ Güncel</span>
+                    }
+                  </td>
+                  <td className="px-5 py-2.5">
+                    <span className={`inline-flex px-2 py-0.5 rounded-full text-xs font-medium ${cs.status === 'active' ? 'bg-emerald-50 text-emerald-700' : cs.status === 'cancelled' ? 'bg-red-50 text-red-700' : 'bg-gray-100 text-gray-600'}`}>
+                      {cs.status === 'active' ? 'Aktif' : cs.status === 'cancelled' ? 'İptal' : cs.status === 'paused' ? 'Durduruldu' : cs.status}
+                    </span>
+                  </td>
+                  <td className="px-5 py-2.5">
+                    <div className="flex items-center gap-0.5">
+                      {nextRec && (
+                        <Button variant="ghost" size="icon" className="h-7 w-7 text-emerald-600 hover:text-emerald-700 hover:bg-emerald-50" title="Tahsil Et" onClick={() => { setSubPayTarget({ cs, rec: nextRec }); setSubPayAmount(String(nextRec.amount - nextRec.paid_amount)) }}>
+                          <DollarSign className="h-3.5 w-3.5" />
+                        </Button>
+                      )}
+                      <Button variant="ghost" size="icon" className="h-7 w-7 text-muted-foreground hover:text-foreground" onClick={() => { setEditingCust(cs); setShowCustForm(true) }}>
+                        <Pencil className="h-3.5 w-3.5" />
+                      </Button>
+                      <Button variant="ghost" size="icon" className="h-7 w-7 text-red-400 hover:text-red-600 hover:bg-red-50" onClick={() => handleDeleteCust(cs.id)}>
+                        <Trash2 className="h-3.5 w-3.5" />
+                      </Button>
+                    </div>
+                  </td>
+                </tr>
+              )
+            })}
           </tbody>
         </table>
       </div>
@@ -314,20 +368,44 @@ export function ReceivablesPage() {
       {payTarget && (
         <Dialog open onOpenChange={() => setPayTarget(null)}>
           <DialogContent className="max-w-sm">
-            <DialogHeader><DialogTitle>Ödeme Kaydet</DialogTitle></DialogHeader>
+            <DialogHeader><DialogTitle>Tahsilat Kaydet</DialogTitle></DialogHeader>
             <div className="space-y-3">
               <div className="bg-muted/50 rounded-xl px-4 py-3 space-y-1">
                 <p className="text-xs text-muted-foreground">Cari: <span className="font-medium text-foreground">{payTarget.contact_name}</span></p>
                 <p className="text-xs text-muted-foreground">Kalan: <AmountDisplay amount={payTarget.amount - payTarget.paid_amount} className="inline font-semibold" /></p>
               </div>
               <div className="space-y-1.5">
-                <Label>Ödeme Tutarı (₺)</Label>
+                <Label>Tahsilat Tutarı (₺)</Label>
                 <Input type="number" value={payAmount} onChange={(e) => setPayAmount(e.target.value)} max={payTarget.amount - payTarget.paid_amount} autoFocus />
               </div>
             </div>
             <DialogFooter>
               <Button variant="outline" onClick={() => setPayTarget(null)}>İptal</Button>
               <Button onClick={handlePartialPay} disabled={!payAmount || parseFloat(payAmount) <= 0}>Kaydet</Button>
+            </DialogFooter>
+          </DialogContent>
+        </Dialog>
+      )}
+
+      {subPayTarget && (
+        <Dialog open onOpenChange={() => setSubPayTarget(null)}>
+          <DialogContent className="max-w-sm">
+            <DialogHeader><DialogTitle>Abonelik Tahsilatı</DialogTitle></DialogHeader>
+            <div className="space-y-3">
+              <div className="bg-emerald-50 rounded-xl px-4 py-3 space-y-1">
+                <p className="text-xs text-muted-foreground">Müşteri: <span className="font-medium text-foreground">{subPayTarget.cs.contact_name}</span></p>
+                <p className="text-xs text-muted-foreground">Plan: <span className="font-medium text-foreground">{subPayTarget.cs.plan_name}</span></p>
+                <p className="text-xs text-muted-foreground">Dönem: <span className="font-medium text-foreground">{subPayTarget.rec.description}</span></p>
+                <p className="text-xs text-muted-foreground">Kalan: <AmountDisplay amount={subPayTarget.rec.amount - subPayTarget.rec.paid_amount} positive className="inline font-semibold" /></p>
+              </div>
+              <div className="space-y-1.5">
+                <Label>Tahsilat Tutarı (₺)</Label>
+                <Input type="number" value={subPayAmount} onChange={e => setSubPayAmount(e.target.value)} max={subPayTarget.rec.amount - subPayTarget.rec.paid_amount} autoFocus />
+              </div>
+            </div>
+            <DialogFooter>
+              <Button variant="outline" onClick={() => setSubPayTarget(null)}>İptal</Button>
+              <Button className="bg-emerald-600 hover:bg-emerald-700" onClick={handleSubPay} disabled={!subPayAmount || parseFloat(subPayAmount) <= 0}>Kaydet</Button>
             </DialogFooter>
           </DialogContent>
         </Dialog>

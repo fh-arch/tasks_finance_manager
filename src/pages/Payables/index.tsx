@@ -49,6 +49,12 @@ export function PayablesPage() {
     setLoading(false)
   }
 
+  const handleDeletePay = async (id: string) => {
+    if (!confirm('Bu borç kaydı silinecek. Emin misiniz?')) return
+    await supabase.from('payables').delete().eq('id', id)
+    fetchAll()
+  }
+
   const handleDeleteSub = async (id: string) => {
     if (!confirm('Bu abonelik silinecek. Emin misiniz?')) return
     await supabase.from('subscriptions').delete().eq('id', id)
@@ -178,6 +184,9 @@ export function PayablesPage() {
                   <div className="flex items-center gap-0.5">
                     <Button variant="ghost" size="icon" className="h-7 w-7 text-muted-foreground hover:text-foreground" onClick={() => { setEditing(p); setShowForm(true) }}>
                       <Pencil className="h-3.5 w-3.5" />
+                    </Button>
+                    <Button variant="ghost" size="icon" className="h-7 w-7 text-red-400 hover:text-red-600 hover:bg-red-50" onClick={() => handleDeletePay(p.id)}>
+                      <Trash2 className="h-3.5 w-3.5" />
                     </Button>
                     <DocAttachButton relatedType="payable" relatedId={p.id} />
                     {p.status !== 'paid' && (

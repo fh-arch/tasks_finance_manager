@@ -23,7 +23,6 @@ const navGroups = [
       { to: '/receivables', icon: ArrowDownCircle, label: 'Alacaklar' },
       { to: '/payables', icon: ArrowUpCircle, label: 'Borçlar' },
       { to: '/quotes', icon: FileText, label: 'Teklifler' },
-      { to: '/subscriptions', icon: CreditCard, label: 'Abonelikler' },
       { to: '/reconciliation', icon: RefreshCw, label: 'Mutabakat' },
     ],
   },

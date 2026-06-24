@@ -204,6 +204,52 @@ export function CashFlowPage() {
     [periodTx, typeFilter, search]
   )
 
+  // 6 aylık tahmin grafiği
+  const forecastData = useMemo(() => {
+    const now = new Date()
+    const months: string[] = []
+    for (let i = 0; i < 6; i++) {
+      const d = new Date(now.getFullYear(), now.getMonth() + i, 1)
+      months.push(d.toISOString().slice(0, 7))
+    }
+    // Aylık abonelik gideri (recurring)
+    const monthlySubCost = subscriptions.reduce((acc, s) => {
+      if (s.next_billing_date === null) return acc // billing_cycle unknown - skip type refinement
+      return acc // handled below per-month
+    }, 0)
+    void monthlySubCost
+
+    return months.map(ym => {
+      const mStart = `${ym}-01`
+      const mEnd = new Date(parseInt(ym.slice(0,4)), parseInt(ym.slice(5,7)), 0).toISOString().slice(0, 10)
+
+      const projInc = receivables
+        .filter(r => r.status !== 'paid' && r.due_date && r.due_date >= mStart && r.due_date <= mEnd)
+        .reduce((s, r) => s + (r.amount - r.paid_amount), 0)
+
+      const projPayRec = payables
+        .filter(p => p.status !== 'paid' && p.due_date && p.due_date >= mStart && p.due_date <= mEnd)
+        .reduce((s, p) => s + (p.amount - p.paid_amount), 0)
+
+      // Abonelik giderleri: next_billing_date bu aya düşüyorsa veya aktif aylık ise
+      const subCost = subscriptions.reduce((acc, s) => {
+        const nextDate = s.next_billing_date
+        if (!nextDate) return acc + s.amount // aylık saydır
+        if (nextDate >= mStart && nextDate <= mEnd) return acc + s.amount
+        return acc
+      }, 0)
+
+      const projExp = projPayRec + subCost
+      return {
+        month: monthLabel(ym),
+        projectedIncome: projInc,
+        projectedExpense: projExp,
+        projectedNet: projInc - projExp,
+        isFuture: ym > now.toISOString().slice(0, 7),
+      }
+    })
+  }, [receivables, payables, subscriptions])
+
   if (loading) return (
     <div className="flex items-center justify-center py-24">
       <div className="text-center">
@@ -301,6 +347,49 @@ export function CashFlowPage() {
             />
           </ComposedChart>
         </ResponsiveContainer>
+      </div>
+
+      {/* 6 Aylık Tahmin Grafiği */}
+      <div className="bg-white rounded-2xl border border-border/50 shadow-sm p-5">
+        <div className="flex items-center justify-between mb-5">
+          <div>
+            <h2 className="text-sm font-semibold text-gray-900">Gelecek 6 Ay — Olası Gelir / Gider</h2>
+            <p className="text-xs text-muted-foreground mt-0.5">Planlanan alacaklar, borçlar ve abonelik giderleri dahil projeksiyon</p>
+          </div>
+          <div className="flex items-center gap-4 text-xs text-muted-foreground">
+            <span className="flex items-center gap-1.5"><span className="w-3 h-3 rounded-sm bg-teal-500 inline-block" />Olası Gelir</span>
+            <span className="flex items-center gap-1.5"><span className="w-3 h-3 rounded-sm bg-orange-400 inline-block" />Olası Gider</span>
+            <span className="flex items-center gap-1.5"><span className="w-3 h-1 bg-indigo-500 inline-block rounded" />Net</span>
+          </div>
+        </div>
+        <ResponsiveContainer width="100%" height={260}>
+          <ComposedChart data={forecastData} margin={{ top: 5, right: 20, left: 20, bottom: 5 }}>
+            <CartesianGrid strokeDasharray="3 3" stroke="#f0f0f0" vertical={false} />
+            <XAxis dataKey="month" tick={{ fontSize: 11, fill: '#9ca3af' }} axisLine={false} tickLine={false} />
+            <YAxis
+              tickFormatter={v => v >= 1000 ? `${(v / 1000).toFixed(0)}K` : String(v)}
+              tick={{ fontSize: 11, fill: '#9ca3af' }} axisLine={false} tickLine={false}
+            />
+            <Tooltip content={<CustomTooltip />} />
+            <Bar dataKey="projectedIncome" name="Olası Gelir" fill="#14b8a6" radius={[4, 4, 0, 0]} maxBarSize={32} fillOpacity={0.8} />
+            <Bar dataKey="projectedExpense" name="Olası Gider" fill="#fb923c" radius={[4, 4, 0, 0]} maxBarSize={32} fillOpacity={0.8} />
+            <Line
+              dataKey="projectedNet" name="Net Projeksiyon"
+              stroke="#6366f1" strokeWidth={2.5} dot={{ fill: '#6366f1', r: 3 }}
+              type="monotone" strokeDasharray="4 3"
+            />
+          </ComposedChart>
+        </ResponsiveContainer>
+        <div className="mt-3 grid grid-cols-3 gap-3 border-t border-gray-50 pt-3">
+          {forecastData.slice(0, 6).map(d => (
+            <div key={d.month} className={`text-center rounded-xl py-2 px-1 ${d.projectedNet >= 0 ? 'bg-teal-50/60' : 'bg-orange-50/60'}`}>
+              <p className="text-[10px] text-muted-foreground font-medium">{d.month}</p>
+              <p className={`text-xs font-bold mt-0.5 ${d.projectedNet >= 0 ? 'text-teal-700' : 'text-orange-700'}`}>
+                {d.projectedNet >= 0 ? '+' : ''}{trFmt(d.projectedNet)}
+              </p>
+            </div>
+          ))}
+        </div>
       </div>
 
       {/* Category Breakdown + Upcoming */}

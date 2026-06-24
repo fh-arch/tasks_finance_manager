@@ -11,38 +11,51 @@ import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
 import { Textarea } from '@/components/ui/textarea'
-import { Plus, DollarSign, Inbox, Clock, AlertCircle, CheckCircle2, Pencil } from 'lucide-react'
+import { Plus, DollarSign, Inbox, Clock, AlertCircle, CheckCircle2, Pencil, Trash2, Users, RefreshCw } from 'lucide-react'
 import { DocAttachButton } from '@/components/shared/DocAttachButton'
+import type { CustomerSubscription } from '@/types'
 
 type RecWithContact = Receivable & { contact_name?: string }
+type CustSubWithContact = CustomerSubscription & { contact_name?: string }
 
 export function ReceivablesPage() {
   const [items, setItems] = useState<RecWithContact[]>([])
   const [contacts, setContacts] = useState<Contact[]>([])
   const [cariAlacaklar, setCariAlacaklar] = useState<{ id: string; name: string; current_balance: number }[]>([])
+  const [custSubs, setCustSubs] = useState<CustSubWithContact[]>([])
   const [loading, setLoading] = useState(true)
   const [showForm, setShowForm] = useState(false)
   const [editing, setEditing] = useState<Receivable | null>(null)
   const [payTarget, setPayTarget] = useState<RecWithContact | null>(null)
   const [payAmount, setPayAmount] = useState('')
+  const [showCustForm, setShowCustForm] = useState(false)
+  const [editingCust, setEditingCust] = useState<CustSubWithContact | null>(null)
 
   const fetchAll = async () => {
     const today = new Date().toISOString().slice(0, 10)
-    // Vadesi geçmiş pending/partial kayıtları otomatik overdue'ya çek
     await supabase.from('receivables')
       .update({ status: 'overdue' })
       .in('status', ['pending', 'partial'])
       .lt('due_date', today)
       .not('due_date', 'is', null)
-    const [r, c, ca] = await Promise.all([
+    const [r, c, ca, cs] = await Promise.all([
       supabase.from('receivables').select('*, contacts(name)').order('due_date'),
       supabase.from('contacts').select('id,name').order('name'),
       supabase.from('contacts').select('id,name,current_balance').eq('is_active', true).gt('current_balance', 0).order('current_balance', { ascending: false }),
+      supabase.from('customer_subscriptions').select('*, contacts(name)').order('created_at', { ascending: false }),
     ])
     setItems((r.data ?? []).map((x: any) => ({ ...x, contact_name: x.contacts?.name })))
     setContacts((c.data ?? []) as Contact[])
     setCariAlacaklar(ca.data ?? [])
+    setCustSubs((cs.data ?? []).map((x: any) => ({ ...x, contact_name: x.contacts?.name })))
     setLoading(false)
+  }
+
+  const handleDeleteCust = async (id: string) => {
+    if (!confirm('Bu abonelik ve tüm planlanan alacakları silinecek. Emin misiniz?')) return
+    await supabase.from('receivables').delete().eq('source_id', id).eq('source_type', 'customer_subscription')
+    await supabase.from('customer_subscriptions').delete().eq('id', id)
+    fetchAll()
   }
 
   useEffect(() => { fetchAll() }, [])
@@ -219,11 +232,82 @@ export function ReceivablesPage() {
         </div>
       )}
 
+      {/* ── Müşteri Abonelikleri Bölümü ── */}
+      <div className="bg-white rounded-2xl border border-emerald-100 shadow-sm overflow-hidden">
+        <div className="px-5 py-3 bg-gradient-to-r from-emerald-50 to-teal-50 border-b border-emerald-100 flex items-center justify-between">
+          <div className="flex items-center gap-2">
+            <div className="kpi-icon bg-emerald-100"><Users className="h-4 w-4 text-emerald-600" /></div>
+            <div>
+              <h2 className="text-sm font-bold text-emerald-900">Abonelik Geliri</h2>
+              <p className="text-xs text-emerald-600 mt-0.5">Müşteri abonelikleri — 12 aylık planlama</p>
+            </div>
+          </div>
+          <div className="flex items-center gap-3">
+            <div className="text-right">
+              <p className="text-xs text-muted-foreground">Aylık Toplam</p>
+              <AmountDisplay amount={custSubs.filter(s => s.status === 'active').reduce((a, s) => a + s.amount, 0)} positive className="text-sm font-bold" />
+            </div>
+            <Button size="sm" className="gap-1.5 bg-emerald-600 hover:bg-emerald-700" onClick={() => { setEditingCust(null); setShowCustForm(true) }}>
+              <Plus className="h-4 w-4" /> Abonelik Ekle
+            </Button>
+          </div>
+        </div>
+        <table className="w-full text-sm">
+          <thead className="bg-emerald-50/30">
+            <tr>
+              {['Müşteri', 'Plan', 'Ödeme Günü', 'Tutar', 'Başlangıç', 'Durum', ''].map(h => (
+                <th key={h} className="px-5 py-2.5 text-left text-xs font-semibold text-emerald-700 uppercase tracking-wide">{h}</th>
+              ))}
+            </tr>
+          </thead>
+          <tbody>
+            {custSubs.length === 0 && (
+              <tr><td colSpan={7} className="py-10 text-center text-sm text-muted-foreground">
+                <Users className="h-8 w-8 mx-auto mb-2 text-muted-foreground/25" />
+                Henüz müşteri aboneliği yok
+              </td></tr>
+            )}
+            {custSubs.map(cs => (
+              <tr key={cs.id} className="border-b border-emerald-50 hover:bg-emerald-50/20 transition-colors">
+                <td className="px-5 py-2.5 font-medium">{cs.contact_name ?? '—'}</td>
+                <td className="px-5 py-2.5 text-muted-foreground">{cs.plan_name}</td>
+                <td className="px-5 py-2.5 text-muted-foreground">Her ayın {(cs as any).billing_day ?? 1}'i</td>
+                <td className="px-5 py-2.5"><AmountDisplay amount={cs.amount} positive className="font-semibold" /></td>
+                <td className="px-5 py-2.5 text-muted-foreground">{cs.start_date ? new Date(cs.start_date).toLocaleDateString('tr-TR', { month: 'short', year: 'numeric' }) : '—'}</td>
+                <td className="px-5 py-2.5">
+                  <span className={`inline-flex px-2 py-0.5 rounded-full text-xs font-medium ${cs.status === 'active' ? 'bg-emerald-50 text-emerald-700' : cs.status === 'cancelled' ? 'bg-red-50 text-red-700' : 'bg-gray-100 text-gray-600'}`}>
+                    {cs.status === 'active' ? 'Aktif' : cs.status === 'cancelled' ? 'İptal' : cs.status === 'paused' ? 'Durduruldu' : cs.status}
+                  </span>
+                </td>
+                <td className="px-5 py-2.5">
+                  <div className="flex items-center gap-0.5">
+                    <Button variant="ghost" size="icon" className="h-7 w-7 text-muted-foreground hover:text-foreground" onClick={() => { setEditingCust(cs); setShowCustForm(true) }}>
+                      <Pencil className="h-3.5 w-3.5" />
+                    </Button>
+                    <Button variant="ghost" size="icon" className="h-7 w-7 text-red-400 hover:text-red-600 hover:bg-red-50" onClick={() => handleDeleteCust(cs.id)}>
+                      <Trash2 className="h-3.5 w-3.5" />
+                    </Button>
+                  </div>
+                </td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+
       {showForm && (
         <ReceivableForm
           contacts={contacts} item={editing}
           onSave={() => { setShowForm(false); setEditing(null); fetchAll() }}
           onClose={() => { setShowForm(false); setEditing(null) }}
+        />
+      )}
+
+      {showCustForm && (
+        <CustomerSubForm
+          contacts={contacts} item={editingCust}
+          onSave={() => { setShowCustForm(false); setEditingCust(null); fetchAll() }}
+          onClose={() => { setShowCustForm(false); setEditingCust(null) }}
         />
       )}
 
@@ -343,6 +427,118 @@ function ReceivableForm({ contacts, item, onSave, onClose }: {
         <DialogFooter>
           <Button variant="outline" onClick={onClose}>İptal</Button>
           <Button onClick={handleSave} disabled={loading || !form.amount || !form.due_date}>Kaydet</Button>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
+  )
+}
+
+function CustomerSubForm({ contacts, item, onSave, onClose }: {
+  contacts: Contact[]; item: CustSubWithContact | null; onSave: () => void; onClose: () => void
+}) {
+  const today = new Date()
+  const [form, setForm] = useState({
+    contact_id: item?.contact_id ?? '',
+    plan_name: item?.plan_name ?? '',
+    amount: item?.amount?.toString() ?? '',
+    billing_day: String((item as any)?.billing_day ?? '1'),
+    start_date: item?.start_date ?? today.toISOString().slice(0, 10),
+    status: item?.status ?? 'active',
+    notes: item?.notes ?? '',
+  })
+  const [loading, setLoading] = useState(false)
+  const set = (k: string, v: string) => setForm((f) => ({ ...f, [k]: v }))
+
+  const handleSave = async () => {
+    setLoading(true)
+    const { data: { user } } = await supabase.auth.getUser()
+    if (!user) return
+    const amount = parseFloat(form.amount)
+    const billingDay = Math.min(28, Math.max(1, parseInt(form.billing_day) || 1))
+    const startDate = new Date(form.start_date)
+    const payload = {
+      user_id: user.id, contact_id: form.contact_id, plan_name: form.plan_name,
+      amount, billing_cycle: 'monthly' as const, billing_day: billingDay,
+      start_date: form.start_date, next_billing_date: form.start_date,
+      status: form.status as any, notes: form.notes || null, currency: 'TRY',
+    }
+    if (item) {
+      await supabase.from('customer_subscriptions').update(payload).eq('id', item.id)
+    } else {
+      const { data: inserted } = await supabase.from('customer_subscriptions').insert(payload).select().single()
+      if (inserted) {
+        // 12 aylık alacak planla
+        const MONTHS_TR = ['Ocak','Şubat','Mart','Nisan','Mayıs','Haziran','Temmuz','Ağustos','Eylül','Ekim','Kasım','Aralık']
+        const recs = []
+        for (let i = 0; i < 12; i++) {
+          const dueYear = startDate.getMonth() + 1 + i > 12
+            ? startDate.getFullYear() + Math.floor((startDate.getMonth() + i) / 12)
+            : startDate.getFullYear()
+          const dueMonth = ((startDate.getMonth() + i) % 12) + 1
+          const maxDay = new Date(dueYear, dueMonth, 0).getDate()
+          const dueDay = Math.min(billingDay, maxDay)
+          const dueDateStr = `${dueYear}-${String(dueMonth).padStart(2,'0')}-${String(dueDay).padStart(2,'0')}`
+          recs.push({
+            user_id: user.id, contact_id: form.contact_id, amount, currency: 'TRY',
+            description: `${form.plan_name} — ${MONTHS_TR[dueMonth-1]} ${dueYear}`,
+            source_type: 'customer_subscription', source_id: inserted.id,
+            issue_date: form.start_date, due_date: dueDateStr,
+            status: dueDateStr < today.toISOString().slice(0, 10) ? 'overdue' : 'pending',
+          })
+        }
+        await supabase.from('receivables').insert(recs)
+      }
+    }
+    setLoading(false); onSave()
+  }
+
+  return (
+    <Dialog open onOpenChange={onClose}>
+      <DialogContent>
+        <DialogHeader><DialogTitle>{item ? 'Abonelik Düzenle' : 'Müşteri Aboneliği Ekle'}</DialogTitle></DialogHeader>
+        <div className="space-y-3">
+          <div className="space-y-1.5">
+            <Label>Müşteri *</Label>
+            <Select value={form.contact_id} onValueChange={v => set('contact_id', v)}>
+              <SelectTrigger><SelectValue placeholder="Seçin" /></SelectTrigger>
+              <SelectContent>{contacts.map(c => <SelectItem key={c.id} value={c.id}>{c.name}</SelectItem>)}</SelectContent>
+            </Select>
+          </div>
+          <div className="space-y-1.5"><Label>Plan Adı *</Label><Input value={form.plan_name} onChange={e => set('plan_name', e.target.value)} placeholder="Aylık Eğitim Paketi" /></div>
+          <div className="grid grid-cols-2 gap-3">
+            <div className="space-y-1.5"><Label>Aylık Tutar (₺) *</Label><Input type="number" value={form.amount} onChange={e => set('amount', e.target.value)} /></div>
+            <div className="space-y-1.5">
+              <Label>Her Ayın Kaçı? *</Label>
+              <Input type="number" min="1" max="28" value={form.billing_day} onChange={e => set('billing_day', e.target.value)} placeholder="1" />
+              <p className="text-xs text-muted-foreground">Ödeme günü (1-28)</p>
+            </div>
+          </div>
+          <div className="grid grid-cols-2 gap-3">
+            <div className="space-y-1.5"><Label>Başlangıç Tarihi</Label><Input type="date" value={form.start_date} onChange={e => set('start_date', e.target.value)} /></div>
+            <div className="space-y-1.5">
+              <Label>Durum</Label>
+              <Select value={form.status} onValueChange={v => set('status', v)}>
+                <SelectTrigger><SelectValue /></SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="active">Aktif</SelectItem>
+                  <SelectItem value="paused">Durduruldu</SelectItem>
+                  <SelectItem value="cancelled">İptal</SelectItem>
+                </SelectContent>
+              </Select>
+            </div>
+          </div>
+          <div className="space-y-1.5"><Label>Notlar</Label><Textarea value={form.notes} onChange={e => set('notes', e.target.value)} rows={2} /></div>
+          {!item && (
+            <p className="text-xs bg-emerald-50 border border-emerald-100 text-emerald-700 rounded-xl px-3 py-2">
+              Kaydedince 12 aylık alacak planı otomatik oluşturulacak. Ödenmeyenler vadesi geçince gecikmeye düşecek.
+            </p>
+          )}
+        </div>
+        <DialogFooter>
+          <Button variant="outline" onClick={onClose}>İptal</Button>
+          <Button onClick={handleSave} disabled={loading || !form.contact_id || !form.plan_name || !form.amount}>
+            {loading ? 'Kaydediliyor...' : 'Kaydet'}
+          </Button>
         </DialogFooter>
       </DialogContent>
     </Dialog>

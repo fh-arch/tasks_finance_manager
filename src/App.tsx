@@ -9,7 +9,6 @@ import { DashboardPage } from '@/pages/Dashboard'
 import { ContactsPage } from '@/pages/Contacts'
 import { ContactDetailPage } from '@/pages/Contacts/ContactDetail'
 import { QuotesPage } from '@/pages/Quotes'
-import { SubscriptionsPage } from '@/pages/Subscriptions'
 import { ReceivablesPage } from '@/pages/Receivables'
 import { PayablesPage } from '@/pages/Payables'
 import { ReconciliationPage } from '@/pages/Reconciliation'
@@ -74,7 +73,6 @@ export default function App() {
             <Route path="contacts" element={<ContactsPage />} />
             <Route path="contacts/:id" element={<ContactDetailPage />} />
             <Route path="quotes" element={<QuotesPage />} />
-            <Route path="subscriptions" element={<SubscriptionsPage />} />
             <Route path="receivables" element={<ReceivablesPage />} />
             <Route path="payables" element={<PayablesPage />} />
             <Route path="reconciliation" element={<ReconciliationPage />} />

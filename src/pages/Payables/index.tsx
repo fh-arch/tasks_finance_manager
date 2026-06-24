@@ -11,11 +11,11 @@ import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
 import { Textarea } from '@/components/ui/textarea'
-import { Plus, DollarSign, Inbox, Clock, AlertCircle, CheckCircle2, Pencil, RefreshCw } from 'lucide-react'
+import { Plus, DollarSign, Inbox, Clock, AlertCircle, CheckCircle2, Pencil, RefreshCw, Trash2 } from 'lucide-react'
 import { DocAttachButton } from '@/components/shared/DocAttachButton'
 
 type PayWithContact = Payable & { contact_name?: string }
-type Subscription = { id: string; name: string; amount: number; billing_cycle: string; next_billing_date: string | null }
+type Subscription = { id: string; name: string; amount: number; billing_cycle: string; next_billing_date: string | null; status: string }
 
 const CYCLE_TR: Record<string, string> = { monthly: 'Aylık', quarterly: '3 Aylık', yearly: 'Yıllık' }
 
@@ -28,6 +28,8 @@ export function PayablesPage() {
   const [editing, setEditing] = useState<Payable | null>(null)
   const [payTarget, setPayTarget] = useState<PayWithContact | null>(null)
   const [payAmount, setPayAmount] = useState('')
+  const [showSubForm, setShowSubForm] = useState(false)
+  const [editingSub, setEditingSub] = useState<Subscription | null>(null)
 
   const fetchAll = async () => {
     const today = new Date().toISOString().slice(0, 10)
@@ -39,12 +41,18 @@ export function PayablesPage() {
     const [p, c, s] = await Promise.all([
       supabase.from('payables').select('*, contacts(name)').order('due_date'),
       supabase.from('contacts').select('id,name').order('name'),
-      supabase.from('subscriptions').select('id,name,amount,billing_cycle,next_billing_date').eq('status', 'active').order('next_billing_date'),
+      supabase.from('subscriptions').select('id,name,amount,billing_cycle,next_billing_date,status').order('next_billing_date'),
     ])
     setItems((p.data ?? []).map((x: any) => ({ ...x, contact_name: x.contacts?.name })))
     setContacts((c.data ?? []) as Contact[])
     setSubscriptions((s.data ?? []) as Subscription[])
     setLoading(false)
+  }
+
+  const handleDeleteSub = async (id: string) => {
+    if (!confirm('Bu abonelik silinecek. Emin misiniz?')) return
+    await supabase.from('subscriptions').delete().eq('id', id)
+    fetchAll()
   }
 
   useEffect(() => { fetchAll() }, [])
@@ -186,55 +194,89 @@ export function PayablesPage() {
       </div>
 
       {/* Abonelik Giderleri */}
-      {subscriptions.length > 0 && (
-        <div className="bg-white rounded-2xl border border-violet-100 shadow-sm overflow-hidden">
-          <div className="px-5 py-3.5 border-b border-violet-100 flex items-center gap-2 bg-violet-50/60">
-            <RefreshCw className="h-4 w-4 text-violet-600" />
-            <h3 className="text-sm font-semibold text-violet-800">Abonelik Giderleri</h3>
-            <span className="ml-auto text-xs font-bold text-violet-700">
-              Toplam: {new Intl.NumberFormat('tr-TR', { style: 'currency', currency: 'TRY', minimumFractionDigits: 0 }).format(subscriptions.reduce((s, x) => s + x.amount, 0))}
-            </span>
-          </div>
-          <table className="w-full text-sm">
-            <thead className="bg-violet-50/30">
-              <tr>
-                {['Abonelik Adı', 'Dönem', 'Sonraki Ödeme', 'Tutar'].map(h => (
-                  <th key={h} className="px-4 py-2.5 text-left text-xs font-semibold text-muted-foreground uppercase tracking-wide">{h}</th>
-                ))}
-              </tr>
-            </thead>
-            <tbody>
-              {subscriptions.map(s => {
-                const today = new Date().toISOString().slice(0, 10)
-                const in30 = new Date(); in30.setDate(in30.getDate() + 30)
-                const nextDate = s.next_billing_date && s.next_billing_date >= today ? s.next_billing_date : in30.toISOString().slice(0, 10)
-                const isPast = !s.next_billing_date || s.next_billing_date < today
-                return (
-                  <tr key={s.id} className="border-b border-border/30 hover:bg-violet-50/20 transition-colors">
-                    <td className="px-4 py-2.5 font-medium text-gray-900">{s.name}</td>
-                    <td className="px-4 py-2.5">
-                      <span className="inline-flex items-center px-2 py-0.5 rounded-full text-xs font-medium bg-violet-50 text-violet-700">
-                        {CYCLE_TR[s.billing_cycle] ?? s.billing_cycle}
-                      </span>
-                    </td>
-                    <td className="px-4 py-2.5 text-xs text-muted-foreground">
-                      {formatDate(nextDate)}
-                      {isPast && <span className="ml-1.5 text-[10px] text-amber-600 font-medium">(tahmini)</span>}
-                    </td>
-                    <td className="px-4 py-2.5"><AmountDisplay amount={s.amount} negative className="font-semibold" /></td>
-                  </tr>
-                )
-              })}
-            </tbody>
-          </table>
+      <div className="bg-white rounded-2xl border border-violet-100 shadow-sm overflow-hidden">
+        <div className="px-5 py-3.5 border-b border-violet-100 flex items-center gap-2 bg-violet-50/60">
+          <RefreshCw className="h-4 w-4 text-violet-600" />
+          <h3 className="text-sm font-semibold text-violet-800">Abonelik Giderleri</h3>
+          <span className="ml-4 text-xs font-bold text-violet-700">
+            Aylık: {new Intl.NumberFormat('tr-TR', { style: 'currency', currency: 'TRY', minimumFractionDigits: 0 }).format(
+              subscriptions.filter(s => s.status === 'active').reduce((acc, s) => {
+                if (s.billing_cycle === 'monthly') return acc + s.amount
+                if (s.billing_cycle === 'quarterly') return acc + s.amount / 3
+                if (s.billing_cycle === 'yearly') return acc + s.amount / 12
+                return acc
+              }, 0)
+            )}
+          </span>
+          <Button size="sm" variant="outline" className="ml-auto gap-1 text-violet-700 border-violet-200 hover:bg-violet-50" onClick={() => { setEditingSub(null); setShowSubForm(true) }}>
+            <Plus className="h-3.5 w-3.5" /> Abonelik Ekle
+          </Button>
         </div>
-      )}
+        <table className="w-full text-sm">
+          <thead className="bg-violet-50/30">
+            <tr>
+              {['Abonelik Adı', 'Dönem', 'Sonraki Ödeme', 'Tutar', 'Durum', ''].map(h => (
+                <th key={h} className="px-4 py-2.5 text-left text-xs font-semibold text-muted-foreground uppercase tracking-wide">{h}</th>
+              ))}
+            </tr>
+          </thead>
+          <tbody>
+            {subscriptions.length === 0 && (
+              <tr><td colSpan={6} className="py-8 text-center text-sm text-muted-foreground">Henüz abonelik gideri yok</td></tr>
+            )}
+            {subscriptions.map(s => {
+              const today = new Date().toISOString().slice(0, 10)
+              const in30 = new Date(); in30.setDate(in30.getDate() + 30)
+              const nextDate = s.next_billing_date && s.next_billing_date >= today ? s.next_billing_date : in30.toISOString().slice(0, 10)
+              const isPast = !s.next_billing_date || s.next_billing_date < today
+              return (
+                <tr key={s.id} className="border-b border-border/30 hover:bg-violet-50/20 transition-colors">
+                  <td className="px-4 py-2.5 font-medium text-gray-900">{s.name}</td>
+                  <td className="px-4 py-2.5">
+                    <span className="inline-flex items-center px-2 py-0.5 rounded-full text-xs font-medium bg-violet-50 text-violet-700">
+                      {CYCLE_TR[s.billing_cycle] ?? s.billing_cycle}
+                    </span>
+                  </td>
+                  <td className="px-4 py-2.5 text-xs text-muted-foreground">
+                    {formatDate(nextDate)}
+                    {isPast && <span className="ml-1.5 text-[10px] text-amber-600 font-medium">(tahmini)</span>}
+                  </td>
+                  <td className="px-4 py-2.5"><AmountDisplay amount={s.amount} negative className="font-semibold" /></td>
+                  <td className="px-4 py-2.5">
+                    <span className={`inline-flex px-2 py-0.5 rounded-full text-xs font-medium ${s.status === 'active' ? 'bg-emerald-50 text-emerald-700' : s.status === 'cancelled' ? 'bg-red-50 text-red-700' : 'bg-gray-100 text-gray-600'}`}>
+                      {s.status === 'active' ? 'Aktif' : s.status === 'cancelled' ? 'İptal' : s.status === 'inactive' ? 'Pasif' : s.status}
+                    </span>
+                  </td>
+                  <td className="px-4 py-2.5">
+                    <div className="flex items-center gap-0.5">
+                      <Button variant="ghost" size="icon" className="h-7 w-7 text-muted-foreground hover:text-foreground" onClick={() => { setEditingSub(s); setShowSubForm(true) }}>
+                        <Pencil className="h-3.5 w-3.5" />
+                      </Button>
+                      <Button variant="ghost" size="icon" className="h-7 w-7 text-red-400 hover:text-red-600 hover:bg-red-50" onClick={() => handleDeleteSub(s.id)}>
+                        <Trash2 className="h-3.5 w-3.5" />
+                      </Button>
+                    </div>
+                  </td>
+                </tr>
+              )
+            })}
+          </tbody>
+        </table>
+      </div>
 
       {showForm && (
         <PayableForm
           contacts={contacts} item={editing}
           onSave={() => { setShowForm(false); setEditing(null); fetchAll() }}
           onClose={() => { setShowForm(false); setEditing(null) }}
+        />
+      )}
+
+      {showSubForm && (
+        <ExpenseSubForm
+          item={editingSub}
+          onSave={() => { setShowSubForm(false); setEditingSub(null); fetchAll() }}
+          onClose={() => { setShowSubForm(false); setEditingSub(null) }}
         />
       )}
 
@@ -349,6 +391,73 @@ function PayableForm({ contacts, item, onSave, onClose }: {
         <DialogFooter>
           <Button variant="outline" onClick={onClose}>İptal</Button>
           <Button onClick={handleSave} disabled={loading || !form.amount || !form.due_date}>Kaydet</Button>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
+  )
+}
+
+function ExpenseSubForm({ item, onSave, onClose }: { item: Subscription | null; onSave: () => void; onClose: () => void }) {
+  const [form, setForm] = useState({
+    name: item?.name ?? '',
+    amount: item?.amount?.toString() ?? '',
+    billing_cycle: item?.billing_cycle ?? 'monthly',
+    next_billing_date: item?.next_billing_date ?? '',
+    status: item?.status ?? 'active',
+  })
+  const [loading, setLoading] = useState(false)
+  const set = (k: string, v: string) => setForm((f) => ({ ...f, [k]: v }))
+
+  const handleSave = async () => {
+    setLoading(true)
+    const { data: { user } } = await supabase.auth.getUser()
+    if (!user) return
+    const payload = {
+      user_id: user.id, name: form.name, amount: parseFloat(form.amount),
+      billing_cycle: form.billing_cycle as any, next_billing_date: form.next_billing_date || null,
+      status: form.status as any, currency: 'TRY',
+    }
+    if (item) { await supabase.from('subscriptions').update(payload).eq('id', item.id) }
+    else { await supabase.from('subscriptions').insert(payload) }
+    setLoading(false); onSave()
+  }
+
+  return (
+    <Dialog open onOpenChange={onClose}>
+      <DialogContent>
+        <DialogHeader><DialogTitle>{item ? 'Abonelik Düzenle' : 'Gider Aboneliği Ekle'}</DialogTitle></DialogHeader>
+        <div className="space-y-3">
+          <div className="space-y-1.5"><Label>Servis Adı *</Label><Input value={form.name} onChange={e => set('name', e.target.value)} placeholder="Netflix, Hosting..." /></div>
+          <div className="grid grid-cols-2 gap-3">
+            <div className="space-y-1.5"><Label>Tutar (₺) *</Label><Input type="number" value={form.amount} onChange={e => set('amount', e.target.value)} /></div>
+            <div className="space-y-1.5">
+              <Label>Döngü</Label>
+              <Select value={form.billing_cycle} onValueChange={v => set('billing_cycle', v)}>
+                <SelectTrigger><SelectValue /></SelectTrigger>
+                <SelectContent>
+                  <SelectItem value="monthly">Aylık</SelectItem>
+                  <SelectItem value="quarterly">Üç Aylık</SelectItem>
+                  <SelectItem value="yearly">Yıllık</SelectItem>
+                </SelectContent>
+              </Select>
+            </div>
+          </div>
+          <div className="space-y-1.5"><Label>Sonraki Ödeme Tarihi</Label><Input type="date" value={form.next_billing_date} onChange={e => set('next_billing_date', e.target.value)} /></div>
+          <div className="space-y-1.5">
+            <Label>Durum</Label>
+            <Select value={form.status} onValueChange={v => set('status', v)}>
+              <SelectTrigger><SelectValue /></SelectTrigger>
+              <SelectContent>
+                <SelectItem value="active">Aktif</SelectItem>
+                <SelectItem value="inactive">Pasif</SelectItem>
+                <SelectItem value="cancelled">İptal</SelectItem>
+              </SelectContent>
+            </Select>
+          </div>
+        </div>
+        <DialogFooter>
+          <Button variant="outline" onClick={onClose}>İptal</Button>
+          <Button onClick={handleSave} disabled={loading || !form.name || !form.amount}>Kaydet</Button>
         </DialogFooter>
       </DialogContent>
     </Dialog>

@@ -71,20 +71,57 @@ export interface CurrentAccountEntry {
   created_at: string
 }
 
+export type TransactionType = 'income' | 'expense' | 'receivable' | 'payable' | 'adjustment'
+export type TransactionStatus = 'completed' | 'pending' | 'cancelled' | 'open' | 'partial' | 'paid'
+
 export interface Transaction {
   id: string
   user_id: string
   contact_id: string | null
   category_id: string | null
-  type: 'income' | 'expense'
+  type: TransactionType
   amount: number
   currency: string
   description: string | null
   transaction_date: string
   payment_method: string | null
-  status: 'completed' | 'pending' | 'cancelled'
+  status: TransactionStatus
   notes: string | null
   created_at: string
+  // Phase 1 yeni alanlar
+  due_date: string | null
+  paid_amount: number
+  tx_category: string | null
+  legacy_ref: string | null
+  source_type: string | null
+  source_id: string | null
+  invoice_number: string | null
+}
+
+export interface Payment {
+  id: string
+  user_id: string
+  transaction_id: string
+  amount: number
+  paid_at: string
+  method: 'cash' | 'bank' | 'card' | 'check' | 'other' | null
+  note: string | null
+  created_at: string
+}
+
+export interface CashFlowEntry {
+  flow_date: string
+  user_id: string
+  contact_id: string | null
+  type: TransactionType
+  description: string | null
+  flow_amount: number
+  method: string | null
+  flow_type: 'realized' | 'planned'
+  payment_id: string | null
+  transaction_id: string
+  category: string | null
+  legacy_ref: string | null
 }
 
 export interface Subscription {
@@ -121,6 +158,7 @@ export interface CustomerSubscription {
   created_at: string
 }
 
+// Legacy interfaces — Phase 2'de yavaş yavaş Transaction'a taşınacak
 export interface Receivable {
   id: string
   user_id: string

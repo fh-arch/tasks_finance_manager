@@ -6,7 +6,8 @@ import { Label } from '@/components/ui/label'
 import { Textarea } from '@/components/ui/textarea'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from '@/components/ui/dialog'
-import { Plus, Users2, Pencil, Trash2, Search, Building2, Mail, Phone, MapPin } from 'lucide-react'
+import { Plus, Users2, Pencil, Trash2, Search, Building2, Mail, Phone, MapPin, Banknote } from 'lucide-react'
+import { DocAttachButton } from '@/components/shared/DocAttachButton'
 
 type Lead = {
   id: string
@@ -17,6 +18,8 @@ type Lead = {
   city: string | null
   status: string
   notes: string | null
+  quote_amount: number | null
+  quote_date: string | null
   created_at: string
 }
 
@@ -29,7 +32,7 @@ const STATUS_CONFIG: Record<string, { label: string; color: string }> = {
 
 const STATUSES = Object.keys(STATUS_CONFIG)
 
-const emptyForm = { full_name: '', company: '', email: '', phone: '', city: '', status: 'gorusuldu', notes: '' }
+const emptyForm = { full_name: '', company: '', email: '', phone: '', city: '', status: 'gorusuldu', notes: '', quote_amount: '', quote_date: '' }
 
 export function LeadsPage() {
   const [leads, setLeads] = useState<Lead[]>([])
@@ -52,7 +55,7 @@ export function LeadsPage() {
   const openForm = (lead?: Lead) => {
     if (lead) {
       setEditing(lead)
-      setForm({ full_name: lead.full_name, company: lead.company ?? '', email: lead.email ?? '', phone: lead.phone ?? '', city: lead.city ?? '', status: lead.status, notes: lead.notes ?? '' })
+      setForm({ full_name: lead.full_name, company: lead.company ?? '', email: lead.email ?? '', phone: lead.phone ?? '', city: lead.city ?? '', status: lead.status, notes: lead.notes ?? '', quote_amount: lead.quote_amount != null ? String(lead.quote_amount) : '', quote_date: lead.quote_date ?? '' })
     } else {
       setEditing(null)
       setForm(emptyForm)
@@ -74,16 +77,59 @@ export function LeadsPage() {
       city: form.city || null,
       status: form.status,
       notes: form.notes || null,
+      quote_amount: form.quote_amount ? Number(form.quote_amount) : null,
+      quote_date: form.quote_date || null,
       updated_at: new Date().toISOString(),
     }
     let err: any = null
+    let savedLeadId: string | null = editing?.id ?? null
+
     if (editing) {
       const { error } = await supabase.from('leads').update(payload).eq('id', editing.id)
       err = error
     } else {
-      const { error } = await supabase.from('leads').insert(payload)
+      const { data: inserted, error } = await supabase.from('leads').insert(payload).select('id').single()
       err = error
+      savedLeadId = inserted?.id ?? null
     }
+
+    // Teklif tutarı varsa otomatik olarak Teklifler'de kayıt oluştur
+    if (!err && payload.quote_amount && savedLeadId) {
+      const prevAmount = editing?.quote_amount ?? null
+      const amountChanged = !editing || prevAmount !== payload.quote_amount
+      if (amountChanged) {
+        // Bu lead için mevcut teklif var mı kontrol et
+        const { data: existing } = await supabase.from('quotes')
+          .select('id').eq('source_type', 'lead').eq('source_id', savedLeadId).maybeSingle()
+        if (!existing) {
+          // quote_number üret: Q-YYYY-xxxx
+          const qNum = `Q-${new Date().getFullYear()}-${Date.now().toString().slice(-4)}`
+          const subtotal = payload.quote_amount
+          await supabase.from('quotes').insert({
+            user_id: user.id,
+            quote_number: qNum,
+            title: `${payload.full_name}${payload.company ? ' – ' + payload.company : ''} Teklifi`,
+            issue_date: payload.quote_date ?? new Date().toISOString().slice(0, 10),
+            status: 'sent',
+            subtotal,
+            tax_rate: 0,
+            tax_amount: 0,
+            total: subtotal,
+            currency: 'TRY',
+            notes: `Müşteri adayından otomatik oluşturuldu.`,
+            source_type: 'lead',
+            source_id: savedLeadId,
+          })
+        } else {
+          // Tutar değiştiyse güncelle
+          await supabase.from('quotes').update({
+            subtotal: payload.quote_amount, total: payload.quote_amount,
+            issue_date: payload.quote_date ?? new Date().toISOString().slice(0, 10),
+          }).eq('id', existing.id)
+        }
+      }
+    }
+
     setSaving(false)
     if (err) { alert(`Kayıt hatası: ${err.message}`); return }
     setShowForm(false)
@@ -178,6 +224,7 @@ export function LeadsPage() {
                     </div>
                   </div>
                   <div className="flex gap-1">
+                    <DocAttachButton relatedType="lead" relatedId={lead.id} />
                     <button onClick={() => openForm(lead)} className="p-1.5 hover:bg-gray-100 rounded-lg transition-colors">
                       <Pencil className="h-3.5 w-3.5 text-muted-foreground" />
                     </button>
@@ -205,6 +252,17 @@ export function LeadsPage() {
                   )}
                 </div>
 
+                {lead.quote_amount != null && (
+                  <div className="flex items-center gap-1.5 mb-2">
+                    <Banknote className="h-3 w-3 text-amber-500 flex-shrink-0" />
+                    <span className="text-xs font-semibold text-amber-700">
+                      Teklif: ₺{lead.quote_amount.toLocaleString('tr-TR', { minimumFractionDigits: 2 })}
+                    </span>
+                    {lead.quote_date && (
+                      <span className="text-[10px] text-muted-foreground ml-auto">{lead.quote_date}</span>
+                    )}
+                  </div>
+                )}
                 {lead.notes && (
                   <p className="text-xs text-muted-foreground bg-gray-50 rounded-lg px-2.5 py-2 mb-3 line-clamp-2">{lead.notes}</p>
                 )}
@@ -273,6 +331,16 @@ export function LeadsPage() {
                       {STATUSES.map(s => <SelectItem key={s} value={s}>{STATUS_CONFIG[s].label}</SelectItem>)}
                     </SelectContent>
                   </Select>
+                </div>
+              </div>
+              <div className="grid grid-cols-2 gap-3">
+                <div className="space-y-1.5">
+                  <Label>Teklif Tutarı (₺)</Label>
+                  <Input type="number" min="0" step="0.01" value={form.quote_amount} onChange={e => setForm(f => ({ ...f, quote_amount: e.target.value }))} placeholder="0,00" />
+                </div>
+                <div className="space-y-1.5">
+                  <Label>Teklif Tarihi</Label>
+                  <Input type="date" value={form.quote_date} onChange={e => setForm(f => ({ ...f, quote_date: e.target.value }))} />
                 </div>
               </div>
               <div className="space-y-1.5">

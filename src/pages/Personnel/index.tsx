@@ -11,9 +11,10 @@ import { DocAttachButton } from '@/components/shared/DocAttachButton'
 import { formatDate } from '@/lib/utils'
 import {
   Plus, Users, Pencil, Trash2, UserCheck, GraduationCap,
-  Wallet, Award, Inbox, CheckCircle2, Circle, ChevronLeft, ChevronRight, ListChecks, CalendarDays, FolderOpen, ChevronDown,
+  Wallet, Award, Inbox, CheckCircle2, Circle, ChevronLeft, ChevronRight, ListChecks, CalendarDays, FolderOpen, ChevronDown, RefreshCw,
 } from 'lucide-react'
 import { AttendanceTab } from './AttendanceTab'
+import { fetchFreelancers, fetchBalances, fetchPayouts } from '@/lib/english360'
 
 type Personnel = {
   id: string; user_id: string; name: string; type: 'employee' | 'freelance'
@@ -21,6 +22,7 @@ type Personnel = {
   base_salary: number; base_bonus: number; hire_date: string | null
   termination_date: string | null; created_at: string
   bakiye: number | null; bakiye_tarihi: string | null
+  bakiye_currencies: Record<string, number> | null
   ara_odeme: number | null; ara_odeme_tarihi: string | null
   son_odeme_gunu: number | null
 }
@@ -87,6 +89,110 @@ export function PersonnelPage() {
   }
 
   useEffect(() => { fetchAll() }, [])
+
+  // ─── English360 Sync ───────────────────────────────────────────
+  const [syncing, setSyncing] = useState(false)
+  const [syncResult, setSyncResult] = useState<string | null>(null)
+
+  const syncEnglish360 = async (fullSync = false) => {
+    setSyncing(true)
+    setSyncResult(null)
+    try {
+      const { data: { user } } = await supabase.auth.getUser()
+      if (!user) return
+
+      // 1. Freelancer listesini çek, yoksa oluştur
+      const e360List = await fetchFreelancers()
+      // İsmi olmayan (silinmiş/test) kayıtları atla
+      const validFreelancers = e360List.filter(f => f.first_name && f.last_name)
+      for (const f of validFreelancers) {
+        const { data: existing } = await supabase.from('personnel')
+          .select('id').eq('english360_id', f.freelancer_id).maybeSingle()
+        if (!existing) {
+          // İsme göre eşleştirmeyi dene — birden fazla boşluğu normalize et
+          const fullName = `${f.first_name} ${f.last_name}`.replace(/\s+/g, ' ').trim()
+          const { data: byName } = await supabase.from('personnel')
+            .select('id').ilike('name', fullName).eq('type', 'freelance').maybeSingle()
+          if (byName) {
+            await supabase.from('personnel').update({ english360_id: f.freelancer_id }).eq('id', byName.id)
+          } else {
+            // Yeni freelancer oluştur
+            await supabase.from('personnel').insert({
+              user_id: user.id, name: fullName, type: 'freelance', is_active: true,
+              english360_id: f.freelancer_id,
+            })
+          }
+        }
+      }
+
+      // 2. Bakiyeleri güncelle — sadece bakiye > 0 olanlar (earned_total bazlı, sıfır kayıtları atla)
+      const balances = await fetchBalances()
+      const currencyMap: Record<string, Record<string, number>> = {}
+      for (const b of balances) {
+        if (!b.first_name && !b.last_name) continue // isimsiz kayıt, atla
+        if (!currencyMap[b.freelancer_id]) currencyMap[b.freelancer_id] = {}
+        // Mevcut değerle karşılaştır, sıfırın üzerindeyse kaydet
+        const existing = currencyMap[b.freelancer_id][b.currency] ?? 0
+        currencyMap[b.freelancer_id][b.currency] = existing + b.balance
+      }
+      for (const [e360Id, currencies] of Object.entries(currencyMap)) {
+        await supabase.from('personnel').update({
+          bakiye: currencies['TRY'] ?? 0,
+          bakiye_currencies: currencies,
+        }).eq('english360_id', e360Id)
+      }
+
+      // 3. Ödemeleri çek — tam sync'te baştan, normal'de son 90 gün
+      const since = fullSync ? '2020-01-01' : new Date(Date.now() - 90 * 86400_000).toISOString().slice(0, 10)
+      const payouts = await fetchPayouts(since)
+      let newPayouts = 0
+      for (const po of payouts) {
+        const { data: person } = await supabase.from('personnel')
+          .select('id').eq('english360_id', po.freelancer_id).maybeSingle()
+        if (!person) continue
+
+        const pd = po.payment_date ? new Date(po.payment_date) : new Date(po.created_at)
+        const payDate = pd.toISOString().slice(0, 10)
+
+        // payout_id varsa onunla, yoksa tarih+tutar+personel kombinasyonuyla dedup
+        let exists: any = null
+        if (po.payout_id) {
+          const { data } = await supabase.from('personnel_payments')
+            .select('id').eq('english360_payout_id', po.payout_id).maybeSingle()
+          exists = data
+        } else {
+          const { data } = await supabase.from('personnel_payments')
+            .select('id')
+            .eq('personnel_id', person.id)
+            .eq('payment_date', payDate)
+            .eq('amount', po.amount)
+            .maybeSingle()
+          exists = data
+        }
+        if (exists) continue
+
+        await supabase.from('personnel_payments').insert({
+          user_id: user.id,
+          personnel_id: person.id,
+          payment_type: 'freelance',
+          amount: po.amount,
+          currency: po.currency,
+          period_month: pd.getMonth() + 1,
+          period_year: pd.getFullYear(),
+          payment_date: payDate,
+          note: po.note,
+          english360_payout_id: po.payout_id ?? null,
+        })
+        newPayouts++
+      }
+
+      setSyncResult(`✓ ${validFreelancers.length} öğretmen (${e360List.length - validFreelancers.length} isimsiz atlandı), ${Object.keys(currencyMap).length} bakiye, ${newPayouts} yeni ödeme${fullSync ? ' (tam geçmiş)' : ''} senkronize edildi`)
+      fetchAll()
+    } catch (err: any) {
+      setSyncResult(`Hata: ${err.message}`)
+    }
+    setSyncing(false)
+  }
 
   // ─── Payroll helpers ───────────────────────────────────────────
   const monthPayments = payments.filter(
@@ -385,7 +491,7 @@ export function PersonnelPage() {
                   </tr>
                 </thead>
                 <tbody>
-                  {personnel.filter(activeInMonth).map(person => {
+                  {personnel.filter(p => p.type !== 'freelance' && activeInMonth(p)).map(person => {
                     const salaryPaid = isPaid(person.id, 'salary')
                     const bonusPaid = isPaid(person.id, 'bonus')
                     const markingSalary = markingId === person.id + 'salary'
@@ -578,15 +684,24 @@ export function PersonnelPage() {
       )}
 
       {/* ── TAB: STAFF ── */}
-      {tab === TAB_STAFF && (
+      {tab === TAB_STAFF && (() => {
+        const employees = personnel.filter(p => p.type === 'employee')
+        const staffAraOdeme = employees.reduce((s, p) => s + (Number(p.ara_odeme) || 0), 0)
+        const staffBakiye = employees.reduce((s, p) => s + (Number(p.bakiye) || 0), 0)
+        const staffPaid = payments.filter(pay => {
+          const per = employees.find(e => e.id === pay.personnel_id)
+          return !!per && pay.period_year === payrollYear && pay.period_month === payrollMonth
+        }).reduce((s, p) => s + Number(p.amount), 0)
+        return (
+        <div className="space-y-4">
         <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
-          {personnel.length === 0 && (
+          {employees.length === 0 && (
             <div className="col-span-3 text-center py-14">
               <Users className="h-10 w-10 text-muted-foreground/25 mx-auto mb-2" />
               <p className="text-sm text-muted-foreground">Personel eklenmedi</p>
             </div>
           )}
-          {personnel.map(p => (
+          {employees.map(p => (
             <div key={p.id} className="bg-white rounded-2xl border border-border/50 shadow-sm p-4 hover:shadow-md transition-shadow">
               <div className="flex items-start justify-between mb-3">
                 <div className="flex items-center gap-3">
@@ -671,17 +786,46 @@ export function PersonnelPage() {
             </div>
           ))}
         </div>
-      )}
+        {employees.length > 0 && (
+          <div className="bg-white rounded-2xl border border-border/50 shadow-sm overflow-hidden">
+            <table className="w-full text-sm">
+              <thead className="bg-gray-50 border-b border-border/40">
+                <tr>
+                  <th className="px-5 py-3 text-left text-xs font-semibold text-muted-foreground uppercase tracking-wide">Özet</th>
+                  <th className="px-5 py-3 text-right text-xs font-semibold text-muted-foreground uppercase tracking-wide">Bakiye</th>
+                  <th className="px-5 py-3 text-right text-xs font-semibold text-muted-foreground uppercase tracking-wide">Ara Ödeme</th>
+                  <th className="px-5 py-3 text-right text-xs font-semibold text-muted-foreground uppercase tracking-wide">Bu Ay Ödenen</th>
+                </tr>
+              </thead>
+              <tbody>
+                <tr>
+                  <td className="px-5 py-3 font-semibold text-gray-700">Toplam ({employees.length} personel)</td>
+                  <td className="px-5 py-3 text-right">
+                    {staffBakiye > 0 ? <AmountDisplay amount={staffBakiye} className="text-sm font-bold text-violet-700" /> : <span className="text-xs text-muted-foreground">—</span>}
+                  </td>
+                  <td className="px-5 py-3 text-right">
+                    {staffAraOdeme > 0 ? <AmountDisplay amount={staffAraOdeme} negative className="text-sm font-bold text-amber-600" /> : <span className="text-xs text-muted-foreground">—</span>}
+                  </td>
+                  <td className="px-5 py-3 text-right">
+                    {staffPaid > 0 ? <AmountDisplay amount={staffPaid} negative className="text-sm font-bold" /> : <span className="text-xs text-muted-foreground">—</span>}
+                  </td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
+        )}
+        </div>
+        )
+      })()}
 
       {/* ── TAB: PUANTAJ ── */}
-      {tab === TAB_PUANTAJ && <AttendanceTab personnel={personnel} />}
+      {tab === TAB_PUANTAJ && <AttendanceTab personnel={personnel.filter(p => p.type !== 'freelance')} />}
 
       {/* ── TAB: FREELANCE ── */}
       {tab === TAB_FREELANCE && (() => {
-        const freelancers = personnel.filter(p => p.type === 'freelance')
-        const monthStart = new Date(payrollYear, payrollMonth - 1, 1)
-        const monthEnd = new Date(payrollYear, payrollMonth, 0)
-        const monthStr = `${payrollYear}-${String(payrollMonth).padStart(2,'0')}`
+        const freelancers = personnel
+          .filter(p => p.type === 'freelance')
+          .sort((a, b) => (Number(b.bakiye) || 0) - (Number(a.bakiye) || 0))
 
         const freelancePayments = payments.filter(p => {
           const person = personnel.find(pe => pe.id === p.personnel_id)
@@ -690,9 +834,50 @@ export function PersonnelPage() {
         })
 
         const totalFreelance = freelancePayments.reduce((s, p) => s + Number(p.amount), 0)
+        const totalAraOdeme = freelancers.reduce((s, p) => s + (Number(p.ara_odeme) || 0), 0)
+        const totalBakiyeByCurrency: Record<string, number> = {}
+        for (const p of freelancers) {
+          if (p.bakiye_currencies && Object.keys(p.bakiye_currencies).length > 0) {
+            for (const [cur, val] of Object.entries(p.bakiye_currencies)) {
+              if (val > 0) totalBakiyeByCurrency[cur] = (totalBakiyeByCurrency[cur] ?? 0) + val
+            }
+          } else if (p.bakiye) {
+            totalBakiyeByCurrency['TRY'] = (totalBakiyeByCurrency['TRY'] ?? 0) + Number(p.bakiye)
+          }
+        }
+
+        const openPay = (person: Personnel, desc = '', amt = '') => {
+          setPayForm(f => ({
+            ...f,
+            personnel_id: person.id,
+            payment_type: 'freelance',
+            period_month: String(payrollMonth),
+            period_year: String(payrollYear),
+            amount: amt,
+            description: desc,
+          }))
+          setShowPayForm(true)
+        }
 
         return (
           <div className="space-y-4">
+            {/* English360 Sync */}
+            <div className="flex items-center gap-2 flex-wrap">
+              <Button variant="outline" size="sm" onClick={() => syncEnglish360(false)} disabled={syncing} className="gap-2">
+                <RefreshCw className={`h-3.5 w-3.5 ${syncing ? 'animate-spin' : ''}`} />
+                {syncing ? 'Senkronize ediliyor...' : 'Güncelle'}
+              </Button>
+              <Button variant="outline" size="sm" onClick={() => syncEnglish360(true)} disabled={syncing} className="gap-2 text-violet-600 border-violet-200 hover:bg-violet-50">
+                <RefreshCw className={`h-3.5 w-3.5 ${syncing ? 'animate-spin' : ''}`} />
+                Tam Geçmiş Sync
+              </Button>
+              {syncResult && (
+                <span className={`text-xs font-medium ${syncResult.startsWith('Hata') ? 'text-red-500' : 'text-emerald-600'}`}>
+                  {syncResult}
+                </span>
+              )}
+            </div>
+
             {/* Month nav */}
             <div className="flex items-center justify-between bg-white rounded-2xl border border-border/50 shadow-sm px-5 py-3">
               <button onClick={prevMonth} className="p-1.5 rounded-lg hover:bg-gray-100 transition-colors">
@@ -721,105 +906,152 @@ export function PersonnelPage() {
                 </Button>
               </div>
             ) : (
-              <div className="space-y-3">
-                {freelancers.map(person => {
-                  const personPayments = freelancePayments.filter(p => p.personnel_id === person.id)
-                  const personTotal = personPayments.reduce((s, p) => s + Number(p.amount), 0)
-                  return (
-                    <div key={person.id} className="bg-white rounded-2xl border border-violet-100 shadow-sm overflow-hidden">
-                      {/* Person header */}
-                      <div className="flex items-center justify-between px-5 py-3.5 bg-violet-50/50 border-b border-violet-100">
-                        <div className="flex items-center gap-3">
-                          <div className="w-9 h-9 rounded-xl bg-violet-500 flex items-center justify-center text-white font-bold text-sm">
-                            {person.name.charAt(0).toUpperCase()}
-                          </div>
-                          <div>
-                            <p className="font-semibold text-gray-900 text-sm">{person.name}</p>
-                            <p className="text-xs text-muted-foreground">{person.position || 'Serbest Çalışan'}</p>
-                          </div>
-                        </div>
-                        <div className="flex items-center gap-4">
-                          {person.bakiye != null && (
-                            <div className="text-right">
-                              <p className="text-[10px] text-muted-foreground">Bakiye{person.bakiye_tarihi ? ` · ${person.bakiye_tarihi.slice(0,10)}` : ''}</p>
-                              <AmountDisplay amount={person.bakiye} className="text-sm font-bold text-violet-700" />
-                            </div>
-                          )}
-                          {person.ara_odeme != null && (
-                            <div className="text-right">
-                              <p className="text-[10px] text-muted-foreground">Ara Ödeme{person.ara_odeme_tarihi ? ` · ${person.ara_odeme_tarihi.slice(0,10)}` : ''}</p>
-                              <AmountDisplay amount={person.ara_odeme} negative className="text-sm font-bold text-amber-600" />
-                            </div>
-                          )}
-                          {personTotal > 0 && (
-                            <div className="text-right">
-                              <p className="text-xs text-muted-foreground">Bu Ay Ödenen</p>
-                              <AmountDisplay amount={personTotal} negative className="text-sm font-bold" />
-                            </div>
-                          )}
-                          <Button
-                            size="sm"
-                            variant="outline"
-                            className="gap-1.5 h-8 text-xs border-violet-200 text-violet-700 hover:bg-violet-50"
-                            onClick={() => {
-                              setPayForm(f => ({
-                                ...f,
-                                personnel_id: person.id,
-                                payment_type: 'freelance',
-                                period_month: String(payrollMonth),
-                                period_year: String(payrollYear),
-                                amount: '',
-                                description: '',
-                              }))
-                              setShowPayForm(true)
-                            }}
-                          >
-                            <Plus className="h-3.5 w-3.5" /> Ödeme Ekle
-                          </Button>
-                        </div>
-                      </div>
+              <div className="bg-white rounded-2xl border border-violet-100 shadow-sm overflow-hidden">
+                <table className="w-full text-sm">
+                  <thead className="bg-violet-50/60 border-b border-violet-100">
+                    <tr>
+                      <th className="px-4 py-3 text-left text-xs font-semibold text-violet-700 uppercase tracking-wide">Kişi</th>
+                      <th className="px-4 py-3 text-right text-xs font-semibold text-violet-700 uppercase tracking-wide">Bakiye</th>
+                      <th className="px-4 py-3 text-right text-xs font-semibold text-violet-700 uppercase tracking-wide">Ara Ödeme</th>
+                      <th className="px-4 py-3 text-right text-xs font-semibold text-violet-700 uppercase tracking-wide">Bu Ay Ödenen</th>
+                      <th className="px-4 py-3 text-right text-xs font-semibold text-violet-700 uppercase tracking-wide w-52">İşlem</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {freelancers.map(person => {
+                      const personPayments = freelancePayments.filter(p => p.personnel_id === person.id)
+                      const personTotal = personPayments.reduce((s, p) => s + Number(p.amount), 0)
+                      return (
+                        <>
+                          {/* Ana satır */}
+                          <tr key={person.id} className="border-b border-violet-50 hover:bg-violet-50/30 transition-colors">
+                            <td className="px-4 py-3">
+                              <div className="flex items-center gap-2.5">
+                                <div className="w-8 h-8 rounded-xl bg-violet-500 flex items-center justify-center text-white font-bold text-sm flex-shrink-0">
+                                  {person.name.charAt(0).toUpperCase()}
+                                </div>
+                                <div>
+                                  <p className="font-semibold text-gray-900 text-sm leading-tight">{person.name}</p>
+                                  <p className="text-[11px] text-muted-foreground">{person.position || 'Serbest Çalışan'}</p>
+                                </div>
+                              </div>
+                            </td>
 
-                      {/* Payments for this month */}
-                      {personPayments.length === 0 ? (
-                        <div className="px-5 py-4 text-xs text-muted-foreground italic">
-                          {MONTHS[payrollMonth - 1]} ayında henüz ödeme kaydedilmedi
-                        </div>
-                      ) : (
-                        <table className="w-full text-sm">
-                          <tbody>
-                            {personPayments.map(pay => (
-                              <tr key={pay.id} className="border-b border-border/30 last:border-0 hover:bg-violet-50/20 transition-colors">
-                                <td className="px-5 py-2.5 text-muted-foreground text-xs whitespace-nowrap">
-                                  {pay.payment_date ? pay.payment_date.slice(0, 10) : '—'}
-                                </td>
-                                <td className="px-5 py-2.5 text-xs font-medium text-gray-700">
-                                  <span className="inline-flex items-center px-2 py-0.5 rounded-full text-[10px] font-semibold bg-violet-100 text-violet-700 mr-2">
-                                    {PAYMENT_TYPE_LABELS[pay.payment_type]}
-                                  </span>
-                                  {pay.description || '—'}
-                                </td>
-                                <td className="px-5 py-2.5 text-right">
-                                  <AmountDisplay amount={pay.amount} negative className="font-semibold text-sm" />
-                                </td>
-                                <td className="px-5 py-2.5 w-16">
-                                  <div className="flex items-center gap-0.5 justify-end">
-                                    <DocAttachButton relatedType="personnel_payment" relatedId={pay.id} />
-                                    <Button variant="ghost" size="icon" className="h-7 w-7 text-blue-400 hover:text-blue-600 hover:bg-blue-50" onClick={() => openPayEdit(pay)}>
-                                      <Pencil className="h-3.5 w-3.5" />
-                                    </Button>
-                                    <Button variant="ghost" size="icon" className="h-7 w-7 text-red-400 hover:text-red-600 hover:bg-red-50" onClick={() => handleDeletePayment(pay.id)}>
-                                      <Trash2 className="h-3.5 w-3.5" />
-                                    </Button>
-                                  </div>
-                                </td>
-                              </tr>
-                            ))}
-                          </tbody>
-                        </table>
-                      )}
-                    </div>
-                  )
-                })}
+                            <td className="px-4 py-3 text-right">
+                              {person.bakiye_currencies && Object.keys(person.bakiye_currencies).length > 0 ? (
+                                <div className="space-y-0.5">
+                                  {Object.entries(person.bakiye_currencies).filter(([, v]) => v > 0).map(([cur, val]) => (
+                                    <p key={cur} className="text-sm font-bold text-violet-700">
+                                      {val.toLocaleString('tr-TR', { minimumFractionDigits: 2, maximumFractionDigits: 2 })} {cur}
+                                    </p>
+                                  ))}
+                                  {person.bakiye_tarihi && <p className="text-[10px] text-muted-foreground">{person.bakiye_tarihi.slice(0,10)}</p>}
+                                </div>
+                              ) : person.bakiye != null ? (
+                                <div>
+                                  <AmountDisplay amount={person.bakiye} className="text-sm font-bold text-violet-700" />
+                                  {person.bakiye_tarihi && <p className="text-[10px] text-muted-foreground">{person.bakiye_tarihi.slice(0,10)}</p>}
+                                </div>
+                              ) : <span className="text-xs text-muted-foreground">—</span>}
+                            </td>
+
+                            <td className="px-4 py-3 text-right">
+                              {person.ara_odeme != null ? (
+                                <div>
+                                  <AmountDisplay amount={person.ara_odeme} negative className="text-sm font-bold text-amber-600" />
+                                  {person.ara_odeme_tarihi && <p className="text-[10px] text-muted-foreground">{person.ara_odeme_tarihi.slice(0,10)}</p>}
+                                </div>
+                              ) : <span className="text-xs text-muted-foreground">—</span>}
+                            </td>
+
+                            <td className="px-4 py-3 text-right">
+                              {personTotal > 0
+                                ? <AmountDisplay amount={personTotal} negative className="text-sm font-bold" />
+                                : <span className="text-xs text-muted-foreground">—</span>}
+                            </td>
+
+                            <td className="px-4 py-3">
+                              <div className="flex items-center justify-end gap-1.5">
+                                <Button
+                                  size="sm" variant="outline"
+                                  className="h-7 px-2.5 text-xs border-amber-200 text-amber-700 hover:bg-amber-50 gap-1"
+                                  onClick={() => openPay(person, 'Ara Ödeme', person.ara_odeme != null ? String(person.ara_odeme) : '')}
+                                >
+                                  <Plus className="h-3 w-3" /> Ara Ödeme
+                                </Button>
+                                <Button
+                                  size="sm" variant="outline"
+                                  className="h-7 px-2.5 text-xs border-violet-200 text-violet-700 hover:bg-violet-50 gap-1"
+                                  onClick={() => openPay(person)}
+                                >
+                                  <Plus className="h-3 w-3" /> Ödeme
+                                </Button>
+                              </div>
+                            </td>
+                          </tr>
+
+                          {/* Ödeme detay satırları */}
+                          {personPayments.map(pay => (
+                            <tr key={pay.id} className="bg-violet-50/20 border-b border-violet-50 last:border-0">
+                              <td className="pl-14 pr-4 py-2 text-[11px] text-muted-foreground" colSpan={1}>
+                                {pay.payment_date?.slice(0,10)}
+                              </td>
+                              <td className="px-4 py-2 text-[11px] text-gray-600" colSpan={2}>
+                                <span className="inline-flex px-1.5 py-0.5 rounded-full text-[10px] font-semibold bg-violet-100 text-violet-700 mr-1.5">
+                                  {PAYMENT_TYPE_LABELS[pay.payment_type]}
+                                </span>
+                                {pay.description || '—'}
+                              </td>
+                              <td className="px-4 py-2 text-right">
+                                <AmountDisplay amount={pay.amount} negative className="text-[11px] font-semibold" />
+                              </td>
+                              <td className="px-4 py-2">
+                                <div className="flex items-center justify-end gap-0.5">
+                                  <DocAttachButton relatedType="personnel_payment" relatedId={pay.id} />
+                                  <Button variant="ghost" size="icon" className="h-6 w-6 text-blue-400 hover:text-blue-600" onClick={() => openPayEdit(pay)}>
+                                    <Pencil className="h-3 w-3" />
+                                  </Button>
+                                  <Button variant="ghost" size="icon" className="h-6 w-6 text-red-400 hover:text-red-600" onClick={() => handleDeletePayment(pay.id)}>
+                                    <Trash2 className="h-3 w-3" />
+                                  </Button>
+                                </div>
+                              </td>
+                            </tr>
+                          ))}
+
+                          {personPayments.length === 0 && (
+                            <tr className="bg-violet-50/10 border-b border-violet-50">
+                              <td colSpan={5} className="pl-14 py-2 text-[11px] text-muted-foreground italic">
+                                {MONTHS[payrollMonth - 1]} ayında henüz ödeme yok
+                              </td>
+                            </tr>
+                          )}
+                        </>
+                      )
+                    })}
+                  </tbody>
+                  <tfoot className="border-t-2 border-violet-200 bg-violet-50/80">
+                    <tr>
+                      <td className="px-4 py-3 text-xs font-bold text-violet-800 uppercase tracking-wide">Toplam</td>
+                      <td className="px-4 py-3 text-right">
+                        {Object.entries(totalBakiyeByCurrency).filter(([, v]) => v > 0).map(([cur, val]) => (
+                          <p key={cur} className="text-sm font-bold text-violet-700">
+                            {val.toLocaleString('tr-TR', { minimumFractionDigits: 2, maximumFractionDigits: 2 })} {cur}
+                          </p>
+                        ))}
+                      </td>
+                      <td className="px-4 py-3 text-right">
+                        {totalAraOdeme > 0
+                          ? <AmountDisplay amount={totalAraOdeme} negative className="text-sm font-bold text-amber-700" />
+                          : <span className="text-xs text-muted-foreground">—</span>}
+                      </td>
+                      <td className="px-4 py-3 text-right">
+                        <AmountDisplay amount={totalFreelance} negative className="text-sm font-bold" />
+                      </td>
+                      <td />
+                    </tr>
+                  </tfoot>
+                </table>
               </div>
             )}
           </div>
@@ -829,13 +1061,25 @@ export function PersonnelPage() {
       {/* ── Person Form Dialog ── */}
       {showPersonForm && (
         <Dialog open onOpenChange={() => setShowPersonForm(false)}>
-          <DialogContent className="max-w-sm">
-            <DialogHeader><DialogTitle>{editingPerson ? 'Personel Düzenle' : 'Yeni Personel'}</DialogTitle></DialogHeader>
-            <div className="space-y-3">
-              <div className="space-y-1.5">
-                <Label>Ad Soyad *</Label>
-                <Input value={personForm.name} onChange={e => setPersonForm(f => ({ ...f, name: e.target.value }))} placeholder="Ad Soyad" />
+          <DialogContent className="max-w-lg flex flex-col max-h-[90vh]">
+            <DialogHeader className="flex-shrink-0">
+              <DialogTitle>{editingPerson ? 'Personel Düzenle' : 'Yeni Personel'}</DialogTitle>
+            </DialogHeader>
+
+            <div className="flex-1 overflow-y-auto pr-1 space-y-3">
+              {/* Ad + Tür yan yana */}
+              <div className="grid grid-cols-2 gap-3">
+                <div className="space-y-1.5">
+                  <Label>Ad Soyad *</Label>
+                  <Input value={personForm.name} onChange={e => setPersonForm(f => ({ ...f, name: e.target.value }))} placeholder="Ad Soyad" />
+                </div>
+                <div className="space-y-1.5">
+                  <Label>Pozisyon / Ders</Label>
+                  <Input value={personForm.position} onChange={e => setPersonForm(f => ({ ...f, position: e.target.value }))} placeholder={personForm.type === 'freelance' ? 'İngilizce, Matematik...' : 'Muhasebe, Sekreter...'} />
+                </div>
               </div>
+
+              {/* Tür seçimi */}
               <div className="space-y-1.5">
                 <Label>Tür</Label>
                 <div className="grid grid-cols-2 gap-2">
@@ -843,7 +1087,7 @@ export function PersonnelPage() {
                     <button
                       key={t} type="button"
                       onClick={() => setPersonForm(f => ({ ...f, type: t }))}
-                      className={`flex items-center justify-center gap-2 py-2.5 rounded-xl border-2 text-sm font-medium transition-all ${
+                      className={`flex items-center justify-center gap-2 py-2 rounded-xl border-2 text-sm font-medium transition-all ${
                         personForm.type === t
                           ? t === 'freelance' ? 'border-violet-500 bg-violet-50 text-violet-700' : 'border-blue-500 bg-blue-50 text-blue-700'
                           : 'border-border text-muted-foreground hover:border-gray-300'
@@ -854,11 +1098,9 @@ export function PersonnelPage() {
                   ))}
                 </div>
               </div>
-              <div className="space-y-1.5">
-                <Label>Pozisyon / Ders</Label>
-                <Input value={personForm.position} onChange={e => setPersonForm(f => ({ ...f, position: e.target.value }))} placeholder={personForm.type === 'freelance' ? 'İngilizce, Matematik...' : 'Muhasebe, Sekreter...'} />
-              </div>
-              <div className="grid grid-cols-2 gap-3">
+
+              {/* Maaş + Prim + Son Ödeme Günü */}
+              <div className="grid grid-cols-3 gap-3">
                 <div className="space-y-1.5">
                   <Label>Sabit Maaş (₺)</Label>
                   <Input type="number" value={personForm.base_salary} onChange={e => setPersonForm(f => ({ ...f, base_salary: e.target.value }))} placeholder="0" />
@@ -867,7 +1109,22 @@ export function PersonnelPage() {
                   <Label>Standart Prim (₺)</Label>
                   <Input type="number" value={personForm.base_bonus} onChange={e => setPersonForm(f => ({ ...f, base_bonus: e.target.value }))} placeholder="0" />
                 </div>
+                <div className="space-y-1.5">
+                  <Label>Son Ödeme Günü</Label>
+                  <div className="relative">
+                    <Input
+                      type="number" min="1" max="31"
+                      value={personForm.son_odeme_gunu}
+                      onChange={e => setPersonForm(f => ({ ...f, son_odeme_gunu: e.target.value }))}
+                      placeholder="15"
+                      className="pr-8"
+                    />
+                    <span className="absolute right-2.5 top-1/2 -translate-y-1/2 text-xs text-muted-foreground">.</span>
+                  </div>
+                </div>
               </div>
+
+              {/* Giriş + Çıkış tarihleri */}
               <div className="grid grid-cols-2 gap-3">
                 <div className="space-y-1.5">
                   <Label>İşe Giriş Tarihi</Label>
@@ -878,22 +1135,10 @@ export function PersonnelPage() {
                   <Input type="date" value={personForm.termination_date} onChange={e => setPersonForm(f => ({ ...f, termination_date: e.target.value }))} />
                 </div>
               </div>
-              <div className="space-y-1.5">
-                <Label>Son Ödeme Günü <span className="text-muted-foreground font-normal">(her ayın kaçında?)</span></Label>
-                <div className="relative">
-                  <Input
-                    type="number" min="1" max="31"
-                    value={personForm.son_odeme_gunu}
-                    onChange={e => setPersonForm(f => ({ ...f, son_odeme_gunu: e.target.value }))}
-                    placeholder="örn. 15"
-                    className="pr-14"
-                  />
-                  <span className="absolute right-3 top-1/2 -translate-y-1/2 text-xs text-muted-foreground">. gün</span>
-                </div>
-                <p className="text-[10px] text-muted-foreground">Bu gün geçtikten sonra ödenmemişse borçlara otomatik eklenir</p>
-              </div>
+
+              {/* Freelance: Bakiye & Ara Ödeme */}
               {personForm.type === 'freelance' && (
-                <div className="space-y-3 border border-violet-100 bg-violet-50/40 rounded-xl p-3">
+                <div className="border border-violet-100 bg-violet-50/40 rounded-xl p-3 space-y-2.5">
                   <p className="text-xs font-semibold text-violet-700 uppercase tracking-wide">Bakiye & Ara Ödeme</p>
                   <div className="grid grid-cols-2 gap-3">
                     <div className="space-y-1.5">
@@ -917,14 +1162,18 @@ export function PersonnelPage() {
                   </div>
                 </div>
               )}
+
               <div className="space-y-1.5">
                 <Label>Notlar</Label>
                 <Textarea value={personForm.notes} onChange={e => setPersonForm(f => ({ ...f, notes: e.target.value }))} rows={2} />
               </div>
             </div>
-            <DialogFooter>
+
+            <DialogFooter className="flex-shrink-0 pt-2 border-t border-border/40">
               <Button variant="outline" onClick={() => setShowPersonForm(false)}>İptal</Button>
-              <Button onClick={handleSavePerson} disabled={saving || !personForm.name}>Kaydet</Button>
+              <Button onClick={handleSavePerson} disabled={saving || !personForm.name}>
+                {saving ? 'Kaydediliyor...' : 'Kaydet'}
+              </Button>
             </DialogFooter>
           </DialogContent>
         </Dialog>

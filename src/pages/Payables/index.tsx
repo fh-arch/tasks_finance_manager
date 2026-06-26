@@ -1,9 +1,8 @@
 import { useEffect, useState } from 'react'
 import { supabase } from '@/lib/supabase'
-import type { Payable, Contact } from '@/types'
+import type { Transaction, Contact } from '@/types'
 import { Button } from '@/components/ui/button'
 import { StatusBadge } from '@/components/shared/StatusBadge'
-import { SourceBadge } from '@/components/shared/SourceBadge'
 import { AmountDisplay } from '@/components/shared/AmountDisplay'
 import { formatDate } from '@/lib/utils'
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogFooter } from '@/components/ui/dialog'
@@ -14,32 +13,30 @@ import { Textarea } from '@/components/ui/textarea'
 import { Plus, DollarSign, Inbox, Clock, AlertCircle, CheckCircle2, Pencil, RefreshCw, Trash2 } from 'lucide-react'
 import { DocAttachButton } from '@/components/shared/DocAttachButton'
 
-type PayWithContact = Payable & { contact_name?: string }
+type TxWithContact = Transaction & { contact_name?: string }
 type Subscription = { id: string; name: string; amount: number; billing_cycle: string; next_billing_date: string | null; status: string }
 
 const CYCLE_TR: Record<string, string> = { monthly: 'Aylık', quarterly: '3 Aylık', yearly: 'Yıllık' }
 
 export function PayablesPage() {
-  const [items, setItems] = useState<PayWithContact[]>([])
+  const [items, setItems] = useState<TxWithContact[]>([])
   const [subscriptions, setSubscriptions] = useState<Subscription[]>([])
   const [contacts, setContacts] = useState<Contact[]>([])
   const [loading, setLoading] = useState(true)
   const [showForm, setShowForm] = useState(false)
-  const [editing, setEditing] = useState<Payable | null>(null)
-  const [payTarget, setPayTarget] = useState<PayWithContact | null>(null)
+  const [editing, setEditing] = useState<TxWithContact | null>(null)
+  const [payTarget, setPayTarget] = useState<TxWithContact | null>(null)
   const [payAmount, setPayAmount] = useState('')
+  const [payMethod, setPayMethod] = useState<string>('bank')
   const [showSubForm, setShowSubForm] = useState(false)
   const [editingSub, setEditingSub] = useState<Subscription | null>(null)
 
   const fetchAll = async () => {
-    const today = new Date().toISOString().slice(0, 10)
-    await supabase.from('payables')
-      .update({ status: 'overdue' })
-      .in('status', ['pending', 'partial'])
-      .lt('due_date', today)
-      .not('due_date', 'is', null)
     const [p, c, s] = await Promise.all([
-      supabase.from('payables').select('*, contacts(name)').order('due_date'),
+      supabase.from('transactions')
+        .select('*, contacts(name)')
+        .eq('type', 'payable')
+        .order('due_date', { ascending: true, nullsFirst: false }),
       supabase.from('contacts').select('id,name').order('name'),
       supabase.from('subscriptions').select('id,name,amount,billing_cycle,next_billing_date,status').order('next_billing_date'),
     ])
@@ -49,9 +46,38 @@ export function PayablesPage() {
     setLoading(false)
   }
 
+  useEffect(() => { fetchAll() }, [])
+
+  const handlePay = async () => {
+    if (!payTarget) return
+    const paid = parseFloat(payAmount)
+    const { data: { user } } = await supabase.auth.getUser()
+    if (!user) return
+    const today = new Date().toISOString().slice(0, 10)
+    const newPaid = (payTarget.paid_amount ?? 0) + paid
+    const newStatus = newPaid >= payTarget.amount ? 'paid' : 'partial'
+
+    await Promise.all([
+      supabase.from('payments').insert({
+        user_id: user.id, transaction_id: payTarget.id,
+        amount: paid, paid_at: today, method: payMethod || 'bank',
+      }),
+      supabase.from('transactions').update({ paid_amount: newPaid, status: newStatus }).eq('id', payTarget.id),
+    ])
+
+    if (payTarget.contact_id) {
+      await supabase.from('current_account_entries').insert({
+        user_id: user.id, contact_id: payTarget.contact_id, entry_type: 'debit',
+        amount: paid, description: `Borç ödemesi: ${payTarget.description ?? ''}`,
+        entry_date: today, related_type: 'transaction', related_id: payTarget.id,
+      })
+    }
+    setPayTarget(null); setPayAmount(''); fetchAll()
+  }
+
   const handleDeletePay = async (id: string) => {
     if (!confirm('Bu borç kaydı silinecek. Emin misiniz?')) return
-    await supabase.from('payables').delete().eq('id', id)
+    await supabase.from('transactions').delete().eq('id', id)
     fetchAll()
   }
 
@@ -59,33 +85,6 @@ export function PayablesPage() {
     if (!confirm('Bu abonelik silinecek. Emin misiniz?')) return
     await supabase.from('subscriptions').delete().eq('id', id)
     fetchAll()
-  }
-
-  useEffect(() => { fetchAll() }, [])
-
-  const handlePay = async () => {
-    if (!payTarget) return
-    const paid = parseFloat(payAmount)
-    const newPaid = payTarget.paid_amount + paid
-    const newStatus = newPaid >= payTarget.amount ? 'paid' : 'partial'
-    const { data: { user } } = await supabase.auth.getUser()
-    if (!user) return
-    const today = new Date().toISOString().slice(0, 10)
-    await supabase.from('payables').update({ paid_amount: newPaid, status: newStatus }).eq('id', payTarget.id)
-    if (payTarget.contact_id) {
-      await supabase.from('current_account_entries').insert({
-        user_id: user.id, contact_id: payTarget.contact_id, entry_type: 'debit',
-        amount: paid, description: `Borç ödemesi: ${payTarget.description ?? ''}`,
-        entry_date: today, related_type: 'payable', related_id: payTarget.id,
-      })
-    }
-    // Gider işlemine yansıt
-    await supabase.from('transactions').insert({
-      user_id: user.id, type: 'expense', contact_id: payTarget.contact_id ?? null,
-      amount: paid, description: `Borç ödemesi: ${payTarget.description ?? ''}`,
-      transaction_date: today, status: 'completed', currency: 'TRY',
-    })
-    setPayTarget(null); setPayAmount(''); fetchAll()
   }
 
   if (loading) return (
@@ -97,9 +96,13 @@ export function PayablesPage() {
     </div>
   )
 
-  const totalPending = items.filter((p) => p.status === 'pending').reduce((s, p) => s + (p.amount - p.paid_amount), 0)
-  const totalOverdue = items.filter((p) => p.status === 'overdue').reduce((s, p) => s + (p.amount - p.paid_amount), 0)
-  const totalPaid = items.filter((p) => p.status === 'paid').reduce((s, p) => s + p.amount, 0)
+  const today = new Date().toISOString().slice(0, 10)
+  const rem = (p: TxWithContact) => p.amount - (p.paid_amount ?? 0)
+  const isOverdue = (p: TxWithContact) => p.status !== 'paid' && p.due_date != null && p.due_date < today
+
+  const totalPending = items.filter(p => (p.status === 'open' || p.status === 'pending') && !isOverdue(p)).reduce((s, p) => s + rem(p), 0)
+  const totalOverdue = items.filter(p => isOverdue(p)).reduce((s, p) => s + rem(p), 0)
+  const totalPaid    = items.filter(p => p.status === 'paid').reduce((s, p) => s + p.amount, 0)
 
   return (
     <div className="space-y-4 animate-fade-in">
@@ -144,14 +147,14 @@ export function PayablesPage() {
         <table className="w-full text-sm">
           <thead className="bg-gradient-to-r from-gray-50 to-gray-50/50">
             <tr>
-              <th className="px-4 py-3 text-left text-xs font-semibold text-muted-foreground uppercase tracking-wide">Cari / Kaynak</th>
+              <th className="px-4 py-3 text-left text-xs font-semibold text-muted-foreground uppercase tracking-wide">Cari</th>
               <th className="px-4 py-3 text-left text-xs font-semibold text-muted-foreground uppercase tracking-wide">Açıklama</th>
               <th className="px-4 py-3 text-left text-xs font-semibold text-muted-foreground uppercase tracking-wide">Vade</th>
               <th className="px-4 py-3 text-right text-xs font-semibold text-muted-foreground uppercase tracking-wide">Tutar</th>
               <th className="px-4 py-3 text-right text-xs font-semibold text-muted-foreground uppercase tracking-wide">Ödenen</th>
               <th className="px-4 py-3 text-right text-xs font-semibold text-muted-foreground uppercase tracking-wide">Kalan</th>
               <th className="px-4 py-3 text-left text-xs font-semibold text-muted-foreground uppercase tracking-wide">Durum</th>
-              <th className="px-4 py-3 w-16"></th>
+              <th className="px-4 py-3 w-28"></th>
             </tr>
           </thead>
           <tbody>
@@ -164,40 +167,49 @@ export function PayablesPage() {
                 </td>
               </tr>
             )}
-            {items.map((p) => (
-              <tr key={p.id} className="border-b border-border/40 hover:bg-primary/[0.02] transition-colors">
-                <td className="px-4 py-2.5">
-                  <p className="font-medium text-sm truncate max-w-[180px]" title={p.contact_name ?? ''}>{p.contact_name ?? '—'}</p>
-                  <span className="mt-0.5 inline-block"><SourceBadge source={p.source_type} /></span>
-                </td>
-                <td className="px-4 py-2.5 max-w-[160px]">
-                  <p className="text-sm text-muted-foreground truncate" title={p.description ?? ''}>{p.description ?? '—'}</p>
-                </td>
-                <td className="px-4 py-2.5 text-sm text-muted-foreground whitespace-nowrap">
-                  {p.due_date ? formatDate(p.due_date) : '—'}
-                </td>
-                <td className="px-4 py-2.5 text-right"><AmountDisplay amount={p.amount} negative className="text-sm" /></td>
-                <td className="px-4 py-2.5 text-right"><AmountDisplay amount={p.paid_amount} positive className="text-sm" /></td>
-                <td className="px-4 py-2.5 text-right"><AmountDisplay amount={p.amount - p.paid_amount} negative={p.amount - p.paid_amount > 0} className="text-sm font-semibold" /></td>
-                <td className="px-4 py-2.5"><StatusBadge status={p.status} /></td>
-                <td className="px-4 py-2.5">
-                  <div className="flex items-center gap-0.5">
-                    <Button variant="ghost" size="icon" className="h-7 w-7 text-muted-foreground hover:text-foreground" onClick={() => { setEditing(p); setShowForm(true) }}>
-                      <Pencil className="h-3.5 w-3.5" />
-                    </Button>
-                    <Button variant="ghost" size="icon" className="h-7 w-7 text-red-400 hover:text-red-600 hover:bg-red-50" onClick={() => handleDeletePay(p.id)}>
-                      <Trash2 className="h-3.5 w-3.5" />
-                    </Button>
-                    <DocAttachButton relatedType="payable" relatedId={p.id} />
-                    {p.status !== 'paid' && (
-                      <Button variant="ghost" size="icon" className="h-7 w-7 text-emerald-600 hover:text-emerald-700 hover:bg-emerald-50" onClick={() => { setPayTarget(p); setPayAmount('') }}>
-                        <DollarSign className="h-3.5 w-3.5" />
+            {items.map(p => {
+              const r = rem(p)
+              const overdue = isOverdue(p)
+              return (
+                <tr key={p.id} className="border-b border-border/40 hover:bg-primary/[0.02] transition-colors">
+                  <td className="px-4 py-2.5 font-medium max-w-[180px] truncate">{p.contact_name ?? '—'}</td>
+                  <td className="px-4 py-2.5 max-w-[160px]">
+                    <p className="text-sm text-muted-foreground truncate">{p.description ?? '—'}</p>
+                  </td>
+                  <td className="px-4 py-2.5 text-sm whitespace-nowrap">
+                    {p.due_date
+                      ? <span className={overdue ? 'text-red-600 font-medium' : 'text-muted-foreground'}>{formatDate(p.due_date)}</span>
+                      : <span className="text-muted-foreground">—</span>
+                    }
+                  </td>
+                  <td className="px-4 py-2.5 text-right"><AmountDisplay amount={p.amount} negative className="text-sm" /></td>
+                  <td className="px-4 py-2.5 text-right"><AmountDisplay amount={p.paid_amount ?? 0} positive className="text-sm" /></td>
+                  <td className="px-4 py-2.5 text-right"><AmountDisplay amount={r} negative={r > 0} className="text-sm font-semibold" /></td>
+                  <td className="px-4 py-2.5">
+                    {overdue
+                      ? <span className="inline-flex px-2 py-0.5 rounded-full text-xs font-medium bg-red-50 text-red-700">Gecikmiş</span>
+                      : <StatusBadge status={p.status === 'open' ? 'pending' : p.status} />
+                    }
+                  </td>
+                  <td className="px-4 py-2.5">
+                    <div className="flex items-center gap-0.5">
+                      <Button variant="ghost" size="icon" className="h-7 w-7 text-muted-foreground hover:text-foreground" onClick={() => { setEditing(p); setShowForm(true) }}>
+                        <Pencil className="h-3.5 w-3.5" />
                       </Button>
-                    )}
-                  </div>
-                </td>
-              </tr>
-            ))}
+                      <Button variant="ghost" size="icon" className="h-7 w-7 text-red-400 hover:text-red-600 hover:bg-red-50" onClick={() => handleDeletePay(p.id)}>
+                        <Trash2 className="h-3.5 w-3.5" />
+                      </Button>
+                      <DocAttachButton relatedType="payable" relatedId={p.id} />
+                      {p.status !== 'paid' && r > 0 && (
+                        <Button variant="ghost" size="icon" className="h-7 w-7 text-emerald-600 hover:text-emerald-700 hover:bg-emerald-50" onClick={() => { setPayTarget(p); setPayAmount('') }}>
+                          <DollarSign className="h-3.5 w-3.5" />
+                        </Button>
+                      )}
+                    </div>
+                  </td>
+                </tr>
+              )
+            })}
           </tbody>
         </table>
       </div>
@@ -234,7 +246,6 @@ export function PayablesPage() {
               <tr><td colSpan={6} className="py-8 text-center text-sm text-muted-foreground">Henüz abonelik gideri yok</td></tr>
             )}
             {subscriptions.map(s => {
-              const today = new Date().toISOString().slice(0, 10)
               const in30 = new Date(); in30.setDate(in30.getDate() + 30)
               const nextDate = s.next_billing_date && s.next_billing_date >= today ? s.next_billing_date : in30.toISOString().slice(0, 10)
               const isPast = !s.next_billing_date || s.next_billing_date < today
@@ -253,7 +264,7 @@ export function PayablesPage() {
                   <td className="px-4 py-2.5"><AmountDisplay amount={s.amount} negative className="font-semibold" /></td>
                   <td className="px-4 py-2.5">
                     <span className={`inline-flex px-2 py-0.5 rounded-full text-xs font-medium ${s.status === 'active' ? 'bg-emerald-50 text-emerald-700' : s.status === 'cancelled' ? 'bg-red-50 text-red-700' : 'bg-gray-100 text-gray-600'}`}>
-                      {s.status === 'active' ? 'Aktif' : s.status === 'cancelled' ? 'İptal' : s.status === 'inactive' ? 'Pasif' : s.status}
+                      {s.status === 'active' ? 'Aktif' : s.status === 'cancelled' ? 'İptal' : 'Pasif'}
                     </span>
                   </td>
                   <td className="px-4 py-2.5">
@@ -296,11 +307,23 @@ export function PayablesPage() {
             <div className="space-y-3">
               <div className="bg-muted/50 rounded-xl px-4 py-3 space-y-1">
                 <p className="text-xs text-muted-foreground">Cari: <span className="font-medium text-foreground">{payTarget.contact_name}</span></p>
-                <p className="text-xs text-muted-foreground">Kalan: <AmountDisplay amount={payTarget.amount - payTarget.paid_amount} className="inline font-semibold" /></p>
+                <p className="text-xs text-muted-foreground">Kalan: <AmountDisplay amount={rem(payTarget)} className="inline font-semibold" /></p>
               </div>
               <div className="space-y-1.5">
                 <Label>Ödeme Tutarı (₺)</Label>
-                <Input type="number" value={payAmount} onChange={(e) => setPayAmount(e.target.value)} autoFocus />
+                <Input type="number" value={payAmount} onChange={e => setPayAmount(e.target.value)} autoFocus />
+              </div>
+              <div className="space-y-1.5">
+                <Label>Yöntem</Label>
+                <Select value={payMethod} onValueChange={setPayMethod}>
+                  <SelectTrigger><SelectValue /></SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="bank">Banka Transferi</SelectItem>
+                    <SelectItem value="cash">Nakit</SelectItem>
+                    <SelectItem value="card">Kart</SelectItem>
+                    <SelectItem value="check">Çek</SelectItem>
+                  </SelectContent>
+                </Select>
               </div>
             </div>
             <DialogFooter>
@@ -315,42 +338,44 @@ export function PayablesPage() {
 }
 
 function PayableForm({ contacts, item, onSave, onClose }: {
-  contacts: Contact[]; item: Payable | null; onSave: () => void; onClose: () => void
+  contacts: Contact[]; item: TxWithContact | null; onSave: () => void; onClose: () => void
 }) {
   const [form, setForm] = useState({
     contact_id: item?.contact_id ?? '',
     amount: item?.amount?.toString() ?? '',
     description: item?.description ?? '',
     due_date: item?.due_date ?? '',
-    issue_date: item?.issue_date ?? new Date().toISOString().slice(0, 10),
+    transaction_date: item?.transaction_date ?? new Date().toISOString().slice(0, 10),
     notes: item?.notes ?? '',
-    status: item?.status ?? 'pending',
+    status: item?.status ?? 'open',
   })
   const [loading, setLoading] = useState(false)
-  const set = (k: string, v: string) => setForm((f) => ({ ...f, [k]: v }))
+  const set = (k: string, v: string) => setForm(f => ({ ...f, [k]: v }))
 
   const handleSave = async () => {
     setLoading(true)
     const { data: { user } } = await supabase.auth.getUser()
     if (!user) return
     const payload = {
-      user_id: user.id, contact_id: form.contact_id || null,
+      user_id: user.id, type: 'payable' as const,
+      contact_id: form.contact_id || null,
       amount: parseFloat(form.amount), description: form.description || null,
-      due_date: form.due_date || null, issue_date: form.issue_date,
-      notes: form.notes || null, status: form.status as Payable['status'],
+      due_date: form.due_date || null, transaction_date: form.transaction_date,
+      notes: form.notes || null, status: form.status,
       source_type: 'manual', currency: 'TRY',
+      paid_amount: item?.paid_amount ?? 0,
     }
     if (item) {
-      await supabase.from('payables').update(payload).eq('id', item.id)
+      await supabase.from('transactions').update(payload).eq('id', item.id)
     } else {
-      const { data: inserted } = await supabase.from('payables').insert(payload).select().single()
+      const { data: inserted } = await supabase.from('transactions').insert(payload).select().single()
       if (inserted && form.contact_id) {
         await supabase.from('current_account_entries').insert({
           user_id: user.id, contact_id: form.contact_id, entry_type: 'credit',
           amount: parseFloat(form.amount),
           description: form.description || 'Borç kaydı',
-          entry_date: form.issue_date || new Date().toISOString().slice(0, 10),
-          related_type: 'payable', related_id: inserted.id,
+          entry_date: form.transaction_date,
+          related_type: 'transaction', related_id: inserted.id,
         })
       }
     }
@@ -364,38 +389,37 @@ function PayableForm({ contacts, item, onSave, onClose }: {
         <div className="space-y-3">
           <div className="space-y-1.5">
             <Label>Cari</Label>
-            <Select value={form.contact_id} onValueChange={(v) => set('contact_id', v)}>
+            <Select value={form.contact_id} onValueChange={v => set('contact_id', v)}>
               <SelectTrigger><SelectValue placeholder="Seçin" /></SelectTrigger>
               <SelectContent>
-                {contacts.map((c) => <SelectItem key={c.id} value={c.id}>{c.name}</SelectItem>)}
+                {contacts.map(c => <SelectItem key={c.id} value={c.id}>{c.name}</SelectItem>)}
               </SelectContent>
             </Select>
           </div>
           <div className="grid grid-cols-2 gap-3">
-            <div className="space-y-1.5"><Label>Tutar (₺) *</Label><Input type="number" value={form.amount} onChange={(e) => set('amount', e.target.value)} /></div>
+            <div className="space-y-1.5"><Label>Tutar (₺) *</Label><Input type="number" value={form.amount} onChange={e => set('amount', e.target.value)} /></div>
             <div className="space-y-1.5">
               <Label>Durum</Label>
-              <Select value={form.status} onValueChange={(v) => set('status', v)}>
+              <Select value={form.status} onValueChange={v => set('status', v)}>
                 <SelectTrigger><SelectValue /></SelectTrigger>
                 <SelectContent>
-                  <SelectItem value="pending">Bekliyor</SelectItem>
+                  <SelectItem value="open">Bekliyor</SelectItem>
                   <SelectItem value="partial">Kısmi</SelectItem>
                   <SelectItem value="paid">Ödendi</SelectItem>
-                  <SelectItem value="overdue">Gecikmiş</SelectItem>
                 </SelectContent>
               </Select>
             </div>
           </div>
-          <div className="space-y-1.5"><Label>Açıklama</Label><Input value={form.description} onChange={(e) => set('description', e.target.value)} /></div>
+          <div className="space-y-1.5"><Label>Açıklama</Label><Input value={form.description} onChange={e => set('description', e.target.value)} /></div>
           <div className="grid grid-cols-2 gap-3">
-            <div className="space-y-1.5"><Label>Düzenleme</Label><Input type="date" value={form.issue_date} onChange={(e) => set('issue_date', e.target.value)} /></div>
+            <div className="space-y-1.5"><Label>Düzenleme</Label><Input type="date" value={form.transaction_date} onChange={e => set('transaction_date', e.target.value)} /></div>
             <div className="space-y-1.5">
               <Label>Vade <span className="text-red-500">*</span></Label>
-              <Input type="date" value={form.due_date} onChange={(e) => set('due_date', e.target.value)} className={!form.due_date ? 'border-red-300' : ''} />
-              {!form.due_date && <p className="text-xs text-red-500">Nakit akışına yansıması için vade tarihi zorunludur.</p>}
+              <Input type="date" value={form.due_date} onChange={e => set('due_date', e.target.value)} className={!form.due_date ? 'border-red-300' : ''} />
+              {!form.due_date && <p className="text-xs text-red-500">Nakit akışına yansıması için zorunludur.</p>}
             </div>
           </div>
-          <div className="space-y-1.5"><Label>Notlar</Label><Textarea value={form.notes} onChange={(e) => set('notes', e.target.value)} rows={2} /></div>
+          <div className="space-y-1.5"><Label>Notlar</Label><Textarea value={form.notes} onChange={e => set('notes', e.target.value)} rows={2} /></div>
         </div>
         <DialogFooter>
           <Button variant="outline" onClick={onClose}>İptal</Button>
@@ -415,7 +439,7 @@ function ExpenseSubForm({ item, onSave, onClose }: { item: Subscription | null; 
     status: item?.status ?? 'active',
   })
   const [loading, setLoading] = useState(false)
-  const set = (k: string, v: string) => setForm((f) => ({ ...f, [k]: v }))
+  const set = (k: string, v: string) => setForm(f => ({ ...f, [k]: v }))
 
   const handleSave = async () => {
     setLoading(true)

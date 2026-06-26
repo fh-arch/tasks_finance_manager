@@ -94,6 +94,8 @@ export function CashFlowPage() {
   const [subscriptions, setSubscriptions] = useState<{ id: string; name: string; amount: number; next_billing_date: string | null }[]>([])
   const [custSubs, setCustSubs] = useState<{ id: string; amount: number; billing_day: number | null; status: string }[]>([])
   const [categories, setCategories] = useState<Category[]>([])
+  const [personnelList, setPersonnelList] = useState<any[]>([])
+  const [personnelPays, setPersonnelPays] = useState<any[]>([])
   const [loading, setLoading] = useState(true)
   const [search, setSearch] = useState('')
   const [typeFilter, setTypeFilter] = useState<'all' | 'income' | 'expense'>('all')
@@ -104,13 +106,15 @@ export function CashFlowPage() {
   useEffect(() => {
     const fetchAll = async () => {
       setLoading(true)
-      const [t, r, p, c, s, cs] = await Promise.all([
+      const [t, r, p, c, s, cs, pers, persPay] = await Promise.all([
         supabase.from('transactions').select('*').eq('status', 'completed').order('transaction_date', { ascending: false }),
         supabase.from('receivables').select('*, contacts(name)').order('due_date'),
         supabase.from('payables').select('*, contacts(name)').order('due_date'),
         supabase.from('categories').select('*'),
         supabase.from('subscriptions').select('id,name,amount,next_billing_date').eq('status', 'active'),
         supabase.from('customer_subscriptions').select('id,amount,billing_day,status').eq('status', 'active'),
+        supabase.from('personnel').select('id,name,type,base_salary,base_bonus,ara_odeme,hire_date,termination_date,son_odeme_gunu').eq('is_active', true),
+        supabase.from('personnel_payments').select('personnel_id,payment_type,period_month,period_year,amount'),
       ])
       setTransactions((t.data ?? []) as Transaction[])
       setReceivables((r.data ?? []).map((x: any) => ({ ...x, contact_name: x.contacts?.name })))
@@ -118,6 +122,8 @@ export function CashFlowPage() {
       setCategories((c.data ?? []) as Category[])
       setSubscriptions((s.data ?? []) as { id: string; name: string; amount: number; next_billing_date: string | null }[])
       setCustSubs((cs.data ?? []) as { id: string; amount: number; billing_day: number | null; status: string }[])
+      setPersonnelList(pers.data ?? [])
+      setPersonnelPays(persPay.data ?? [])
       setLoading(false)
     }
     fetchAll()
@@ -197,8 +203,47 @@ export function CashFlowPage() {
     estimated: !s.next_billing_date || s.next_billing_date < today,
   })).sort((a, b) => a.date.localeCompare(b.date))
 
+  // Yaklaşan personel ödemeleri (60 gün içindeki vadeler)
+  const upcomingPersonnel = useMemo(() => {
+    const items: { id: string; label: string; amount: number; date: string }[] = []
+    // Cari ay ve gelecek ay kontrolü
+    for (let i = 0; i <= 1; i++) {
+      const d = new Date()
+      d.setMonth(d.getMonth() - i)
+      const m = d.getMonth() + 1
+      const y = d.getFullYear()
+      const mStart = `${y}-${String(m).padStart(2,'0')}-01`
+      const mEnd   = new Date(y, m, 0).toISOString().slice(0, 10)
+      // Ödeme vadesi: bir sonraki ay son_odeme_gunu
+      const dueM = m === 12 ? 1 : m + 1
+      const dueY = m === 12 ? y + 1 : y
+      for (const p of personnelList) {
+        if (p.termination_date && p.termination_date < mStart) continue
+        if (p.hire_date && p.hire_date > mEnd) continue
+        const dueDay = p.son_odeme_gunu ?? 20
+        const dueDate = `${dueY}-${String(dueM).padStart(2,'0')}-${String(dueDay).padStart(2,'0')}`
+        if (dueDate < today || dueDate > in60str) continue
+        const paid = (ptype: string) => personnelPays.some((pay: any) =>
+          pay.personnel_id === p.id && pay.payment_type === ptype && pay.period_month === m && pay.period_year === y)
+        if (p.type === 'employee') {
+          if (Number(p.base_salary) > 0 && !paid('salary'))
+            items.push({ id: `${p.id}-sal-${m}-${y}`, label: `${p.name} — Maaş`, amount: Number(p.base_salary), date: dueDate })
+          if (Number(p.base_bonus) > 0 && !paid('bonus'))
+            items.push({ id: `${p.id}-bon-${m}-${y}`, label: `${p.name} — Prim`, amount: Number(p.base_bonus), date: dueDate })
+        } else {
+          const expected = Number(p.ara_odeme) || Number(p.base_salary) || 0
+          if (expected > 0 && !paid('freelance'))
+            items.push({ id: `${p.id}-fr-${m}-${y}`, label: `${p.name} — Serbest`, amount: expected, date: dueDate })
+        }
+      }
+    }
+    return items.sort((a, b) => a.date.localeCompare(b.date))
+  }, [personnelList, personnelPays, today, in60str])
+
   const projectedIn = upcomingRec.reduce((s, r) => s + (r.amount - r.paid_amount), 0)
-  const projectedOut = upcomingPay.reduce((s, p) => s + (p.amount - p.paid_amount), 0) + upcomingSubPay.reduce((s, x) => s + x.amount, 0)
+  const projectedOut = upcomingPay.reduce((s, p) => s + (p.amount - p.paid_amount), 0)
+    + upcomingSubPay.reduce((s, x) => s + x.amount, 0)
+    + upcomingPersonnel.reduce((s, x) => s + x.amount, 0)
 
   // Filtered tx list
   const filteredTx = useMemo(() => periodTx
@@ -259,8 +304,26 @@ export function CashFlowPage() {
         return acc
       }, 0)
 
+      // Personel maliyeti — bu aya ait ödenmemiş maaş/prim/serbest
+      const [my, mm] = [parseInt(ym.slice(0, 4)), parseInt(ym.slice(5, 7))]
+      const personnelCost = personnelList.reduce((acc, p) => {
+        if (p.termination_date && p.termination_date < mStart) return acc
+        if (p.hire_date && p.hire_date > mEnd) return acc
+        const paid = (ptype: string) => personnelPays.some((pay: any) =>
+          pay.personnel_id === p.id && pay.payment_type === ptype && pay.period_month === mm && pay.period_year === my)
+        if (p.type === 'employee') {
+          let cost = 0
+          if (Number(p.base_salary) > 0 && !paid('salary')) cost += Number(p.base_salary)
+          if (Number(p.base_bonus) > 0 && !paid('bonus')) cost += Number(p.base_bonus)
+          return acc + cost
+        } else {
+          const expected = Number(p.ara_odeme) || Number(p.base_salary) || 0
+          return acc + (expected > 0 && !paid('freelance') ? expected : 0)
+        }
+      }, 0)
+
       const totalInc = projInc + custSubInc
-      const projExp = projPayRec + subCost
+      const projExp = projPayRec + subCost + personnelCost
       return {
         month: monthLabel(ym),
         projectedIncome: totalInc,
@@ -269,7 +332,7 @@ export function CashFlowPage() {
         isFuture: ym > now.toISOString().slice(0, 7),
       }
     })
-  }, [receivables, payables, subscriptions, custSubs])
+  }, [receivables, payables, subscriptions, custSubs, personnelList, personnelPays])
 
   if (loading) return (
     <div className="flex items-center justify-center py-24">
@@ -493,7 +556,7 @@ export function CashFlowPage() {
             <div className="bg-red-50 rounded-xl p-2.5 text-center">
               <p className="text-xs text-red-600 font-medium">Ödeme</p>
               <p className="text-sm font-bold text-red-600 mt-0.5">{trFmt(projectedOut)}</p>
-              <p className="text-[10px] text-red-500">{upcomingPay.length} borç + {upcomingSubPay.length} abonelik</p>
+              <p className="text-[10px] text-red-500">{upcomingPay.length} borç + {upcomingSubPay.length} abonelik + {upcomingPersonnel.length} personel</p>
             </div>
           </div>
           <div className="space-y-1.5 max-h-[280px] overflow-y-auto">
@@ -536,7 +599,19 @@ export function CashFlowPage() {
                 </div>
               </div>
             ))}
-            {upcomingRec.length === 0 && upcomingPay.length === 0 && upcomingSubPay.length === 0 && (
+            {upcomingPersonnel.map(item => (
+              <div key={item.id} className="flex items-center justify-between py-1.5 px-2 rounded-lg bg-violet-50/60 text-xs">
+                <div className="flex items-center gap-1.5 min-w-0">
+                  <ArrowUpCircle className="h-3 w-3 text-violet-500 flex-shrink-0" />
+                  <span className="truncate text-gray-700">{item.label}</span>
+                </div>
+                <div className="text-right flex-shrink-0 ml-2">
+                  <div className="font-semibold text-violet-700">{trFmt(item.amount)}</div>
+                  <div className="text-muted-foreground text-[10px]">{formatDate(item.date)}</div>
+                </div>
+              </div>
+            ))}
+            {upcomingRec.length === 0 && upcomingPay.length === 0 && upcomingSubPay.length === 0 && upcomingPersonnel.length === 0 && (
               <div className="py-6 text-center">
                 <p className="text-xs text-muted-foreground">60 gün içinde yaklaşan hareket yok</p>
               </div>

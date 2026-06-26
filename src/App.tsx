@@ -24,6 +24,8 @@ import { AIAssistantPage } from '@/pages/AIAssistant'
 import { PersonnelPage } from '@/pages/Personnel'
 import { LeadsPage } from '@/pages/Leads'
 import { TasksPage } from '@/pages/Tasks'
+import { ExpensesPage } from '@/pages/Expenses'
+import TahsilatPage from '@/pages/Tahsilat'
 
 const queryClient = new QueryClient()
 
@@ -88,6 +90,8 @@ export default function App() {
             <Route path="personnel" element={<PersonnelPage />} />
             <Route path="leads" element={<LeadsPage />} />
             <Route path="tasks" element={<TasksPage />} />
+            <Route path="expenses" element={<ExpensesPage />} />
+            <Route path="tahsilat" element={<TahsilatPage />} />
           </Route>
         </Routes>
       </BrowserRouter>

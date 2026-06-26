@@ -23,7 +23,7 @@ export function AppLayout() {
   const [sidebarOpen, setSidebarOpen] = useState(false)
 
   return (
-    <div className="flex h-screen" style={{ background: 'hsl(240 20% 98%)' }}>
+    <div className="flex h-screen" style={{ background: '#eef2f7' }}>
       {/* Mobile overlay */}
       {sidebarOpen && (
         <div

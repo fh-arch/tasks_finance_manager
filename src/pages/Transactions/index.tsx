@@ -10,7 +10,7 @@ import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
 import { Textarea } from '@/components/ui/textarea'
-import { Plus, TrendingUp, TrendingDown, ArrowUpDown, Paperclip } from 'lucide-react'
+import { Plus, TrendingUp, TrendingDown, ArrowUpDown, Paperclip, Trash2, Pencil } from 'lucide-react'
 import { DocAttachButton } from '@/components/shared/DocAttachButton'
 
 type TxWithRel = Transaction & { contact_name?: string; category_name?: string }
@@ -25,7 +25,7 @@ export function TransactionsPage() {
 
   const fetchAll = async () => {
     const [t, c, cat] = await Promise.all([
-      supabase.from('transactions').select('*, contacts(name), categories(name)').order('transaction_date', { ascending: false }),
+      supabase.from('transactions').select('*, contacts(name), categories(name)').in('type', ['income', 'expense']).order('transaction_date', { ascending: false }),
       supabase.from('contacts').select('id,name').order('name'),
       supabase.from('categories').select('*').order('name'),
     ])
@@ -36,6 +36,12 @@ export function TransactionsPage() {
   }
 
   useEffect(() => { fetchAll() }, [])
+
+  const handleDelete = async (id: string) => {
+    if (!confirm('Bu işlem silinecek. Emin misiniz?')) return
+    await supabase.from('transactions').delete().eq('id', id)
+    fetchAll()
+  }
 
   if (loading) return (
     <div className="flex items-center justify-center py-24">
@@ -98,7 +104,7 @@ export function TransactionsPage() {
         <table className="w-full text-sm">
           <thead className="bg-gradient-to-r from-gray-50 to-gray-50/50">
             <tr>
-              {['Tarih', 'Tür', 'Cari', 'Kategori', 'Açıklama', 'Tutar', 'Durum', 'Belge'].map((h) => (
+              {['Tarih', 'Tür', 'Cari', 'Kategori', 'Açıklama', 'Tutar', 'Durum', 'Belge', ''].map((h) => (
                 <th key={h} className="px-5 py-3.5 text-left text-xs font-semibold text-muted-foreground uppercase tracking-wide">{h}</th>
               ))}
             </tr>
@@ -106,7 +112,7 @@ export function TransactionsPage() {
           <tbody>
             {items.length === 0 && (
               <tr>
-                <td colSpan={8} className="py-16 text-center">
+                <td colSpan={9} className="py-16 text-center">
                   <ArrowUpDown className="h-12 w-12 text-muted-foreground/25 mx-auto mb-3" />
                   <h3 className="text-sm font-semibold text-gray-900 mb-1">İşlem bulunamadı</h3>
                   <p className="text-xs text-muted-foreground">Yeni işlem eklemek için yukarıdaki butona tıklayın.</p>
@@ -131,6 +137,18 @@ export function TransactionsPage() {
                 <td className="px-5 py-3 cursor-pointer" onClick={() => { setEditing(t); setShowForm(true) }}><StatusBadge status={t.status} /></td>
                 <td className="px-5 py-3" onClick={e => e.stopPropagation()}>
                   <DocAttachButton relatedType="transaction" relatedId={t.id} />
+                </td>
+                <td className="px-3 py-3" onClick={e => e.stopPropagation()}>
+                  <div className="flex items-center gap-1">
+                    <Button variant="ghost" size="icon" className="h-7 w-7 text-muted-foreground hover:text-primary hover:bg-primary/5"
+                      onClick={() => { setEditing(t); setShowForm(true) }}>
+                      <Pencil className="h-3.5 w-3.5" />
+                    </Button>
+                    <Button variant="ghost" size="icon" className="h-7 w-7 text-red-400 hover:text-red-600 hover:bg-red-50"
+                      onClick={() => handleDelete(t.id)}>
+                      <Trash2 className="h-3.5 w-3.5" />
+                    </Button>
+                  </div>
                 </td>
               </tr>
             ))}

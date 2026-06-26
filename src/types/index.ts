@@ -74,6 +74,8 @@ export interface CurrentAccountEntry {
 export type TransactionType = 'income' | 'expense' | 'receivable' | 'payable' | 'adjustment'
 export type TransactionStatus = 'completed' | 'pending' | 'cancelled' | 'open' | 'partial' | 'paid'
 
+export type ExpenseCategory = 'personel' | 'sarf' | 'kira' | 'yazilim' | 'diger'
+
 export interface Transaction {
   id: string
   user_id: string
@@ -88,7 +90,8 @@ export interface Transaction {
   status: TransactionStatus
   notes: string | null
   created_at: string
-  // Phase 1 yeni alanlar
+  updated_at: string | null
+  // Phase 1 alanlar
   due_date: string | null
   paid_amount: number
   tx_category: string | null
@@ -96,6 +99,29 @@ export interface Transaction {
   source_type: string | null
   source_id: string | null
   invoice_number: string | null
+  // Sprint 1 yeni alanlar
+  kdv_rate: number
+  kdv_amount: number | null    // GENERATED
+  total_amount: number | null  // GENERATED
+  product: string | null
+  period_start: string | null
+  period_end: string | null
+  reference_no: string | null
+  category: ExpenseCategory | string | null  // personel|sarf|kira|yazilim|diger
+}
+
+export interface TransactionItem {
+  id: string
+  user_id: string
+  transaction_id: string
+  label: string
+  sub_label: string | null
+  unit_price: number
+  kdv_rate: number
+  quantity: number
+  total: number | null  // GENERATED
+  sort_order: number
+  created_at: string
 }
 
 export interface Payment {

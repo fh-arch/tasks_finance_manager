@@ -1,8 +1,8 @@
 import { NavLink } from 'react-router-dom'
 import {
-  LayoutDashboard, Users, FileText, CreditCard, ArrowDownCircle,
+  LayoutDashboard, Users, FileText, ArrowDownCircle,
   ArrowUpCircle, RefreshCw, Receipt, FolderOpen, BarChart3, Settings, LogOut,
-  Zap, X, UserCheck, CalendarCheck, Waves, Bot, UserCog, Users2, CheckSquare,
+  Zap, X, UserCheck, CalendarCheck, Waves, Bot, UserCog, Users2, CheckSquare, TrendingDown, Landmark,
 } from 'lucide-react'
 import { cn } from '@/lib/utils'
 import { supabase } from '@/lib/supabase'
@@ -22,7 +22,9 @@ const navGroups = [
     items: [
       { to: '/receivables', icon: ArrowDownCircle, label: 'Alacaklar' },
       { to: '/payables', icon: ArrowUpCircle, label: 'Borçlar' },
+      { to: '/expenses', icon: TrendingDown, label: 'Giderler' },
       { to: '/quotes', icon: FileText, label: 'Teklifler' },
+      { to: '/tahsilat', icon: Landmark, label: 'Tahsilat' },
       { to: '/reconciliation', icon: RefreshCw, label: 'Mutabakat' },
     ],
   },
@@ -56,21 +58,22 @@ export function Sidebar({ onClose }: SidebarProps) {
   }
 
   return (
-    <aside className="w-60 bg-white border-r border-border/60 flex flex-col h-screen shadow-sm">
+    <aside className="w-60 flex flex-col h-screen" style={{ background: '#091832' }}>
       {/* Logo */}
-      <div className="p-5 border-b border-border/40">
+      <div className="p-5 border-b" style={{ borderColor: 'rgba(255,255,255,0.07)' }}>
         <div className="flex items-center justify-between">
-          <div className="flex items-center gap-2.5">
-            <div className="h-8 w-8 rounded-xl bg-gradient-to-br from-indigo-500 to-violet-600 flex items-center justify-center shadow-md">
-              <Zap className="h-4 w-4 text-white" />
+          <div className="flex items-center gap-3">
+            <div className="h-9 w-9 rounded-xl flex items-center justify-center shadow-lg"
+              style={{ background: 'linear-gradient(135deg, #00cfc3, #00a89d)' }}>
+              <Zap className="h-4.5 w-4.5 text-white" style={{ width: 18, height: 18 }} />
             </div>
             <div>
-              <h1 className="text-sm font-bold text-gray-900 leading-tight">Lattice Finance</h1>
-              <p className="text-[10px] text-muted-foreground">Finansal Yönetim</p>
+              <h1 className="text-sm font-bold leading-tight" style={{ color: '#fff' }}>HAFA Finance</h1>
+              <p className="text-[10px]" style={{ color: '#4a7096' }}>Finansal Yönetim</p>
             </div>
           </div>
           {onClose && (
-            <button onClick={onClose} className="lg:hidden p-1 rounded-lg hover:bg-muted text-muted-foreground">
+            <button onClick={onClose} className="lg:hidden p-1 rounded-lg transition-colors" style={{ color: '#4a7096' }}>
               <X className="h-4 w-4" />
             </button>
           )}
@@ -100,11 +103,14 @@ export function Sidebar({ onClose }: SidebarProps) {
         ))}
       </nav>
 
-      {/* Logout */}
-      <div className="p-3 border-t border-border/40">
+      {/* Divider + logout */}
+      <div className="p-3" style={{ borderTop: '1px solid rgba(255,255,255,0.07)' }}>
         <button
           onClick={handleLogout}
-          className="sidebar-link w-full text-red-400 hover:text-red-500 hover:bg-red-50"
+          className="sidebar-link w-full transition-colors"
+          style={{ color: '#4a7096' }}
+          onMouseEnter={e => { (e.currentTarget as HTMLElement).style.color = '#f05a28'; (e.currentTarget as HTMLElement).style.background = 'rgba(240,90,40,0.08)' }}
+          onMouseLeave={e => { (e.currentTarget as HTMLElement).style.color = '#4a7096'; (e.currentTarget as HTMLElement).style.background = '' }}
         >
           <LogOut className="h-4 w-4" />
           Çıkış Yap

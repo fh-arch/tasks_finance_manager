@@ -2,11 +2,12 @@ import { useEffect, useRef, useState } from 'react'
 import { supabase } from '@/lib/supabase'
 import type { Category } from '@/types'
 import { useAppStore } from '@/store/useAppStore'
+import { requestDriveToken, getOrCreateFolder } from '@/lib/googleDrive'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
-import { Plus, Trash2, User, Tag, TrendingUp, TrendingDown, Image, Upload, X } from 'lucide-react'
+import { Plus, Trash2, User, Tag, TrendingUp, TrendingDown, Image, Upload, X, HardDrive, FolderOpen, CheckCircle2 } from 'lucide-react'
 
 export function SettingsPage() {
   const profile = useAppStore((s) => s.profile)
@@ -26,6 +27,10 @@ export function SettingsPage() {
   const [logoUrl, setLogoUrl] = useState<string | null>(null)
   const [logoUploading, setLogoUploading] = useState(false)
   const logoInputRef = useRef<HTMLInputElement>(null)
+  const [driveFolderId, setDriveFolderId] = useState('')
+  const [driveConnecting, setDriveConnecting] = useState(false)
+  const [driveSuccess, setDriveSuccess] = useState(false)
+  const googleClientId = (import.meta as any).env.VITE_GOOGLE_CLIENT_ID ?? ''
 
   useEffect(() => {
     if (profile) {
@@ -39,6 +44,7 @@ export function SettingsPage() {
         company_tax_no: (profile as any).company_tax_no ?? '',
       })
       setLogoUrl(profile.logo_url ?? null)
+      setDriveFolderId((profile as any).google_drive_folder_id ?? '')
     }
     supabase.from('categories').select('*').order('type').then(({ data }) => setCategories(data ?? []))
   }, [profile])
@@ -109,6 +115,42 @@ export function SettingsPage() {
   }
 
   const set = (k: string, v: string) => setForm((f) => ({ ...f, [k]: v }))
+
+  const handleDriveConnect = async () => {
+    setDriveConnecting(true)
+    setDriveSuccess(false)
+    try {
+      const token = await requestDriveToken()
+      const folderName = (import.meta as any).env.VITE_DRIVE_FOLDER_NAME ?? 'edunovatech_lattice finance'
+      const folderId = await getOrCreateFolder(folderName, token)
+      const { data: { user } } = await supabase.auth.getUser()
+      if (!user) return
+      await supabase.from('profiles').update({ google_drive_folder_id: folderId }).eq('id', user.id)
+      // Profili Supabase'den yeniden çek, state tutarlı kalsın
+      const { data: freshProfile } = await supabase.from('profiles').select('*').eq('id', user.id).single()
+      if (freshProfile) setProfile(freshProfile)
+      setDriveFolderId(folderId)
+      setDriveSuccess(true)
+    } catch (err: any) {
+      alert(`Drive bağlantı hatası: ${err.message}`)
+    }
+    setDriveConnecting(false)
+  }
+
+  const handleDriveSaveManual = async () => {
+    const { data: { user } } = await supabase.auth.getUser()
+    if (!user) return
+    await supabase.from('profiles').update({ google_drive_folder_id: driveFolderId || null }).eq('id', user.id)
+    setProfile({ ...profile!, google_drive_folder_id: driveFolderId || null } as any)
+  }
+
+  const handleDriveDisconnect = async () => {
+    const { data: { user } } = await supabase.auth.getUser()
+    if (!user) return
+    await supabase.from('profiles').update({ google_drive_folder_id: null }).eq('id', user.id)
+    setDriveFolderId('')
+    setProfile({ ...profile!, google_drive_folder_id: null } as any)
+  }
 
   return (
     <div className="space-y-6 animate-fade-in max-w-2xl">
@@ -221,6 +263,76 @@ export function SettingsPage() {
           <Button onClick={saveProfile} disabled={saving} className="mt-2">
             {saving ? 'Kaydediliyor...' : 'Değişiklikleri Kaydet'}
           </Button>
+        </div>
+      </div>
+
+      {/* Google Drive card */}
+      <div className="bg-white rounded-2xl border border-border/50 shadow-sm overflow-hidden">
+        <div className="flex items-center gap-3 px-6 py-4 border-b border-border/40 bg-gradient-to-r from-gray-50 to-white">
+          <div className="w-8 h-8 rounded-lg bg-emerald-100 flex items-center justify-center">
+            <HardDrive className="h-4 w-4 text-emerald-600" />
+          </div>
+          <div>
+            <h2 className="text-sm font-semibold text-gray-900">Google Drive Entegrasyonu</h2>
+            <p className="text-xs text-muted-foreground">Belge yüklemelerini doğrudan Drive klasörüne gönder</p>
+          </div>
+          {driveFolderId && (
+            <span className="ml-auto flex items-center gap-1 text-xs text-emerald-600 font-medium bg-emerald-50 px-2.5 py-1 rounded-full">
+              <CheckCircle2 className="h-3 w-3" /> Bağlı
+            </span>
+          )}
+        </div>
+        <div className="p-6 space-y-4">
+          {!googleClientId && (
+            <div className="rounded-xl bg-amber-50 border border-amber-200 p-4 text-sm text-amber-800 space-y-1">
+              <p className="font-semibold">Kurulum gerekiyor</p>
+              <p className="text-xs">Google Drive entegrasyonu için <code className="bg-amber-100 px-1 rounded">VITE_GOOGLE_CLIENT_ID</code> değerini <code className="bg-amber-100 px-1 rounded">.env</code> dosyasına ekleyin.</p>
+              <p className="text-xs mt-2">Adımlar: Google Cloud Console → API &amp; Services → Credentials → OAuth 2.0 Client ID (Web application) → Authorized JS Origins: <code className="bg-amber-100 px-1 rounded">https://tasks.hafadanismanlik.com</code></p>
+            </div>
+          )}
+
+          <div className="space-y-2">
+            <Label>Hedef Klasör ID</Label>
+            <div className="flex gap-2">
+              <Input
+                value={driveFolderId}
+                onChange={(e) => setDriveFolderId(e.target.value)}
+                placeholder="Drive klasör ID'sini buraya yapıştırın"
+                className="font-mono text-xs"
+              />
+              <Button variant="outline" onClick={handleDriveSaveManual} disabled={!driveFolderId} className="flex-shrink-0">
+                Kaydet
+              </Button>
+            </div>
+            <p className="text-xs text-muted-foreground">
+              Drive'da klasörü açın → URL'den klasör ID'sini kopyalayın (drive.google.com/drive/folders/<strong>ID_BURASI</strong>)
+            </p>
+          </div>
+
+          {driveSuccess && (
+            <div className="rounded-xl bg-emerald-50 border border-emerald-200 px-4 py-3 flex items-center gap-2 text-sm text-emerald-700 font-medium">
+              <CheckCircle2 className="h-4 w-4 flex-shrink-0" />
+              Google Drive bağlandı — dosyalar "edunovatech_lattice finance" klasörüne kaydedilecek
+            </div>
+          )}
+
+          {googleClientId && (
+            <div className="flex gap-2">
+              <Button
+                onClick={handleDriveConnect}
+                disabled={driveConnecting}
+                className={`gap-2 flex-1 ${driveFolderId ? 'bg-emerald-600 hover:bg-emerald-700' : ''}`}
+              >
+                <HardDrive className="h-4 w-4" />
+                {driveConnecting ? 'Bağlanıyor...' : driveFolderId ? 'Drive Bağlı — Yeniden Bağla' : 'Google Drive Bağla'}
+              </Button>
+              {driveFolderId && (
+                <Button variant="ghost" onClick={handleDriveDisconnect} className="gap-1.5 text-red-500 hover:text-red-700 hover:bg-red-50">
+                  <X className="h-3.5 w-3.5" /> Bağlantıyı Kes
+                </Button>
+              )}
+            </div>
+          )}
         </div>
       </div>
 

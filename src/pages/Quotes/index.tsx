@@ -2,15 +2,24 @@ import { useEffect, useState } from 'react'
 import { supabase } from '@/lib/supabase'
 import type { Quote } from '@/types'
 import { Button } from '@/components/ui/button'
+import { Input } from '@/components/ui/input'
 import { StatusBadge } from '@/components/shared/StatusBadge'
 import { AmountDisplay } from '@/components/shared/AmountDisplay'
 import { formatDate } from '@/lib/utils'
 import { QuoteForm } from './QuoteForm'
-import { Plus, FileText, CheckCircle2, Clock, XCircle, Download } from 'lucide-react'
+import { Plus, FileText, CheckCircle2, Clock, XCircle, Download, Banknote, Target, Pencil, X } from 'lucide-react'
 import { exportQuotePdf } from '@/lib/pdfExport'
 import { useAppStore } from '@/store/useAppStore'
 
 type QuoteWithContact = Quote & { contact_name?: string }
+type PeriodType = 'monthly' | 'quarterly' | 'yearly'
+type QuoteTarget = { id?: string; period_type: PeriodType; period_year: number; period_num: number; amount_target: number; count_target: number }
+
+function getPeriodLabel(type: PeriodType, year: number, num: number) {
+  if (type === 'monthly') return `${['Ocak','Şubat','Mart','Nisan','Mayıs','Haziran','Temmuz','Ağustos','Eylül','Ekim','Kasım','Aralık'][num-1]} ${year}`
+  if (type === 'quarterly') return `${year} Q${num}`
+  return `${year} Yıllık`
+}
 
 export function QuotesPage() {
   const profile = useAppStore((s) => s.profile)
@@ -19,11 +28,82 @@ export function QuotesPage() {
   const [showForm, setShowForm] = useState(false)
   const [editing, setEditing] = useState<Quote | null>(null)
   const [exportingId, setExportingId] = useState<string | null>(null)
+  const [monthlyLeadQuotes, setMonthlyLeadQuotes] = useState<{ full_name: string; company: string | null; quote_amount: number; quote_date: string | null }[]>([])
+
+  const now = new Date()
+  const [activePeriod, setActivePeriod] = useState<PeriodType>('monthly')
+  const [targets, setTargets] = useState<QuoteTarget[]>([])
+  const [editingTarget, setEditingTarget] = useState(false)
+  const [targetForm, setTargetForm] = useState({ amount_target: '', count_target: '' })
+
+  const currentPeriodNum = activePeriod === 'monthly' ? now.getMonth() + 1 : activePeriod === 'quarterly' ? Math.ceil((now.getMonth() + 1) / 3) : 1
+  const currentTarget = targets.find(t => t.period_type === activePeriod && t.period_year === now.getFullYear() && t.period_num === currentPeriodNum)
 
   const fetchQuotes = async () => {
-    const { data } = await supabase.from('quotes').select('*, contacts(name)').order('created_at', { ascending: false })
-    setQuotes((data ?? []).map((q: any) => ({ ...q, contact_name: q.contacts?.name })))
+    const monthStart = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}-01`
+    const monthEnd   = new Date(now.getFullYear(), now.getMonth() + 1, 0).toISOString().slice(0, 10)
+    const { data: { user } } = await supabase.auth.getUser()
+
+    // Lead'lerden eksik teklifleri otomatik oluştur
+    if (user) {
+      const { data: leadsWithAmount } = await supabase.from('leads')
+        .select('id,full_name,company,quote_amount,quote_date')
+        .not('quote_amount', 'is', null)
+        .eq('user_id', user.id)
+      if (leadsWithAmount) {
+        for (const lead of leadsWithAmount) {
+          const { data: existing } = await supabase.from('quotes')
+            .select('id').eq('source_type', 'lead').eq('source_id', lead.id).maybeSingle()
+          if (!existing) {
+            const qNum = `Q-${new Date().getFullYear()}-${lead.id.slice(-4)}`
+            await supabase.from('quotes').insert({
+              user_id: user.id,
+              quote_number: qNum,
+              title: `${lead.full_name}${lead.company ? ' – ' + lead.company : ''} Teklifi`,
+              issue_date: lead.quote_date ?? new Date().toISOString().slice(0, 10),
+              status: 'sent',
+              subtotal: lead.quote_amount,
+              tax_rate: 0, tax_amount: 0,
+              total: lead.quote_amount,
+              currency: 'TRY',
+              notes: 'Müşteri adayından otomatik oluşturuldu.',
+              source_type: 'lead',
+              source_id: lead.id,
+            })
+          }
+        }
+      }
+    }
+
+    const [qRes, lRes, tRes] = await Promise.all([
+      supabase.from('quotes').select('*, contacts(name)').order('created_at', { ascending: false }),
+      supabase.from('leads').select('full_name,company,quote_amount,quote_date')
+        .not('quote_amount', 'is', null)
+        .gte('quote_date', monthStart)
+        .lte('quote_date', monthEnd)
+        .order('quote_date', { ascending: false }),
+      supabase.from('quote_targets').select('*').eq('period_year', now.getFullYear()),
+    ])
+    setQuotes((qRes.data ?? []).map((q: any) => ({ ...q, contact_name: q.contacts?.name })))
+    setMonthlyLeadQuotes((lRes.data ?? []) as any)
+    setTargets((tRes.data ?? []) as QuoteTarget[])
     setLoading(false)
+  }
+
+  const saveTarget = async () => {
+    const { data: { user } } = await supabase.auth.getUser()
+    if (!user) return
+    const payload = {
+      user_id: user.id,
+      period_type: activePeriod,
+      period_year: now.getFullYear(),
+      period_num: currentPeriodNum,
+      amount_target: Number(targetForm.amount_target) || 0,
+      count_target: Number(targetForm.count_target) || 0,
+    }
+    await supabase.from('quote_targets').upsert(payload, { onConflict: 'user_id,period_type,period_year,period_num' })
+    setEditingTarget(false)
+    fetchQuotes()
   }
 
   const handleExportPdf = async (q: QuoteWithContact) => {
@@ -88,6 +168,26 @@ export function QuotesPage() {
   const totalAccepted = quotes.filter((q) => q.status === 'accepted').reduce((s, q) => s + (q.total ?? 0), 0)
   const totalRejected = quotes.filter((q) => q.status === 'rejected' || q.status === 'expired').reduce((s, q) => s + (q.total ?? 0), 0)
 
+  // Dönem bazlı gerçekleşme (aktif periyot için quotes filtrele)
+  const periodQuotes = (() => {
+    const y = now.getFullYear()
+    const m = now.getMonth() + 1
+    const q = Math.ceil(m / 3)
+    return quotes.filter(qt => {
+      const d = qt.issue_date ?? qt.created_at?.slice(0, 10) ?? ''
+      if (!d) return false
+      const [dy, dm] = d.split('-').map(Number)
+      if (dy !== y) return false
+      if (activePeriod === 'monthly') return dm === m
+      if (activePeriod === 'quarterly') return Math.ceil(dm / 3) === q
+      return true
+    })
+  })()
+  const periodTotal = periodQuotes.reduce((s, q) => s + (q.total ?? 0), 0)
+  const periodCount = periodQuotes.length
+  const amountPct = currentTarget?.amount_target ? Math.min(100, Math.round((periodTotal / currentTarget.amount_target) * 100)) : null
+  const countPct  = currentTarget?.count_target  ? Math.min(100, Math.round((periodCount  / currentTarget.count_target)  * 100)) : null
+
   return (
     <div className="space-y-6 animate-fade-in">
       {/* Header */}
@@ -102,7 +202,7 @@ export function QuotesPage() {
       </div>
 
       {/* KPI Summary */}
-      <div className="grid grid-cols-1 sm:grid-cols-3 gap-4 stagger-children">
+      <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4 stagger-children">
         <div className="kpi-card">
           <div className="flex items-start justify-between mb-3">
             <div className="kpi-icon bg-blue-50"><Clock className="h-5 w-5 text-blue-600" /></div>
@@ -123,6 +223,124 @@ export function QuotesPage() {
           </div>
           <p className="text-xs font-medium text-muted-foreground mb-1">Reddedilen / Süresi Geçen</p>
           <AmountDisplay amount={totalRejected} negative={totalRejected > 0} className="text-xl font-bold" />
+        </div>
+        <div className="kpi-card border-amber-100 bg-amber-50/20">
+          <div className="flex items-start justify-between mb-3">
+            <div className="kpi-icon bg-amber-50"><Banknote className="h-5 w-5 text-amber-600" /></div>
+            <span className="text-xs bg-amber-100 text-amber-700 px-2 py-0.5 rounded-full font-medium">{monthlyLeadQuotes.length} aday</span>
+          </div>
+          <p className="text-xs font-medium text-muted-foreground mb-1">Bu Ay Aday Teklifleri</p>
+          <p className="text-xl font-bold text-amber-700">
+            ₺{monthlyLeadQuotes.reduce((s, l) => s + l.quote_amount, 0).toLocaleString('tr-TR', { minimumFractionDigits: 2 })}
+          </p>
+          {monthlyLeadQuotes.length > 0 && (
+            <div className="mt-2 space-y-0.5 max-h-20 overflow-y-auto">
+              {monthlyLeadQuotes.map((l, i) => (
+                <div key={i} className="flex justify-between text-[10px] text-muted-foreground">
+                  <span className="truncate max-w-[100px]">{l.full_name}{l.company ? ` · ${l.company}` : ''}</span>
+                  <span className="font-medium text-amber-700 flex-shrink-0 ml-1">₺{l.quote_amount.toLocaleString('tr-TR', { minimumFractionDigits: 0 })}</span>
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
+      </div>
+
+      {/* Hedef Takip Paneli */}
+      <div className="bg-white rounded-2xl border border-border/50 shadow-sm overflow-hidden">
+        <div className="flex items-center justify-between px-5 py-3.5 border-b border-border/40 bg-gradient-to-r from-gray-50 to-white">
+          <div className="flex items-center gap-2">
+            <Target className="h-4 w-4 text-violet-600" />
+            <span className="text-sm font-semibold text-gray-900">Hedef Takibi</span>
+          </div>
+          <div className="flex items-center gap-2">
+            {/* Dönem seçici */}
+            <div className="flex rounded-lg border border-border/60 overflow-hidden text-xs">
+              {(['monthly','quarterly','yearly'] as PeriodType[]).map(p => (
+                <button key={p} onClick={() => setActivePeriod(p)}
+                  className={`px-3 py-1.5 font-medium transition-colors ${activePeriod === p ? 'bg-violet-600 text-white' : 'text-muted-foreground hover:bg-gray-50'}`}>
+                  {p === 'monthly' ? 'Aylık' : p === 'quarterly' ? 'Çeyreklik' : 'Yıllık'}
+                </button>
+              ))}
+            </div>
+            {!editingTarget ? (
+              <Button variant="ghost" size="sm" className="gap-1 h-7 text-xs"
+                onClick={() => { setTargetForm({ amount_target: String(currentTarget?.amount_target ?? ''), count_target: String(currentTarget?.count_target ?? '') }); setEditingTarget(true) }}>
+                <Pencil className="h-3 w-3" /> Hedef Gir
+              </Button>
+            ) : (
+              <Button variant="ghost" size="sm" className="gap-1 h-7 text-xs text-red-500" onClick={() => setEditingTarget(false)}>
+                <X className="h-3 w-3" /> İptal
+              </Button>
+            )}
+          </div>
+        </div>
+        <div className="p-5">
+          <p className="text-xs text-muted-foreground mb-4">{getPeriodLabel(activePeriod, now.getFullYear(), currentPeriodNum)}</p>
+
+          {editingTarget ? (
+            <div className="flex gap-3 items-end">
+              <div className="space-y-1">
+                <p className="text-xs text-muted-foreground">Tutar Hedefi (₺)</p>
+                <Input type="number" value={targetForm.amount_target} onChange={e => setTargetForm(f => ({ ...f, amount_target: e.target.value }))} placeholder="0" className="w-40 h-8 text-sm" />
+              </div>
+              <div className="space-y-1">
+                <p className="text-xs text-muted-foreground">Adet Hedefi</p>
+                <Input type="number" value={targetForm.count_target} onChange={e => setTargetForm(f => ({ ...f, count_target: e.target.value }))} placeholder="0" className="w-28 h-8 text-sm" />
+              </div>
+              <Button size="sm" onClick={saveTarget} className="h-8">Kaydet</Button>
+            </div>
+          ) : (
+            <div className="grid grid-cols-2 gap-6">
+              {/* Tutar KPI */}
+              <div>
+                <div className="flex justify-between items-baseline mb-1.5">
+                  <p className="text-xs font-medium text-gray-700">Teklif Tutarı</p>
+                  {amountPct !== null && (
+                    <span className={`text-xs font-bold ${amountPct >= 100 ? 'text-emerald-600' : amountPct >= 60 ? 'text-amber-600' : 'text-red-500'}`}>{amountPct}%</span>
+                  )}
+                </div>
+                <div className="flex items-baseline gap-2 mb-2">
+                  <span className="text-lg font-bold text-gray-900">₺{periodTotal.toLocaleString('tr-TR', { minimumFractionDigits: 0 })}</span>
+                  {currentTarget?.amount_target ? (
+                    <span className="text-xs text-muted-foreground">/ ₺{currentTarget.amount_target.toLocaleString('tr-TR', { minimumFractionDigits: 0 })}</span>
+                  ) : <span className="text-xs text-muted-foreground italic">Hedef girilmemiş</span>}
+                </div>
+                {currentTarget?.amount_target ? (
+                  <div className="h-2 rounded-full bg-gray-100 overflow-hidden">
+                    <div className={`h-full rounded-full transition-all duration-500 ${amountPct! >= 100 ? 'bg-emerald-500' : amountPct! >= 60 ? 'bg-amber-500' : 'bg-red-400'}`}
+                      style={{ width: `${amountPct}%` }} />
+                  </div>
+                ) : (
+                  <div className="h-2 rounded-full bg-gray-100" />
+                )}
+              </div>
+
+              {/* Adet KPI */}
+              <div>
+                <div className="flex justify-between items-baseline mb-1.5">
+                  <p className="text-xs font-medium text-gray-700">Teklif Adedi</p>
+                  {countPct !== null && (
+                    <span className={`text-xs font-bold ${countPct >= 100 ? 'text-emerald-600' : countPct >= 60 ? 'text-amber-600' : 'text-red-500'}`}>{countPct}%</span>
+                  )}
+                </div>
+                <div className="flex items-baseline gap-2 mb-2">
+                  <span className="text-lg font-bold text-gray-900">{periodCount}</span>
+                  {currentTarget?.count_target ? (
+                    <span className="text-xs text-muted-foreground">/ {currentTarget.count_target} teklif</span>
+                  ) : <span className="text-xs text-muted-foreground italic">Hedef girilmemiş</span>}
+                </div>
+                {currentTarget?.count_target ? (
+                  <div className="h-2 rounded-full bg-gray-100 overflow-hidden">
+                    <div className={`h-full rounded-full transition-all duration-500 ${countPct! >= 100 ? 'bg-emerald-500' : countPct! >= 60 ? 'bg-amber-500' : 'bg-red-400'}`}
+                      style={{ width: `${countPct}%` }} />
+                  </div>
+                ) : (
+                  <div className="h-2 rounded-full bg-gray-100" />
+                )}
+              </div>
+            </div>
+          )}
         </div>
       </div>
 

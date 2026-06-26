@@ -6,18 +6,19 @@ import { StatusBadge } from '@/components/shared/StatusBadge'
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from '@/components/ui/dialog'
 import { Badge } from '@/components/ui/badge'
 import { formatDate } from '@/lib/utils'
-import { TrendingUp, TrendingDown, Clock, AlertCircle, CalendarClock, AlertTriangle } from 'lucide-react'
-import {
-  ResponsiveContainer, BarChart, Bar, XAxis, YAxis, CartesianGrid, Tooltip, Legend,
-} from 'recharts'
+import { TrendingUp, TrendingDown, Clock, AlertCircle, CalendarClock, AlertTriangle, Banknote } from 'lucide-react'
 import { format, subMonths, startOfMonth, endOfMonth } from 'date-fns'
 import { tr } from 'date-fns/locale'
+import { DocumentHub } from '@/components/shared/DocumentHub'
 
 interface Stats {
   monthlyIncome: number
   monthlyExpense: number
   pendingReceivables: number
   pendingPayables: number
+  monthlyQuoteTotal: number
+  monthlyQuoteCount: number
+  monthlyQuoteLeads: { full_name: string; company: string | null; quote_amount: number; quote_date: string | null }[]
   upcomingSubscriptions: { name: string; amount: number; next_billing_date: string }[]
   overdueReceivables: { description: string; amount: number; due_date: string }[]
   chartData: { month: string; gelir: number; gider: number }[]
@@ -46,6 +47,7 @@ const panelTitles: Record<string, string> = {
 export function DashboardPage() {
   const [stats, setStats] = useState<Stats>({
     monthlyIncome: 0, monthlyExpense: 0, pendingReceivables: 0, pendingPayables: 0,
+    monthlyQuoteTotal: 0, monthlyQuoteCount: 0, monthlyQuoteLeads: [],
     upcomingSubscriptions: [], overdueReceivables: [], chartData: [],
   })
   const [loading, setLoading] = useState(true)
@@ -62,7 +64,10 @@ export function DashboardPage() {
       const start = startOfMonth(now).toISOString()
       const end = endOfMonth(now).toISOString()
 
-      const [incomeRes, expenseRes, recNoContact, payNoContact, subsRes, allSubsRes, overdueRes, contactsRes, personnelRes, personnelPayRes] = await Promise.all([
+      const monthStart = start.slice(0, 10)
+      const monthEnd   = end.slice(0, 10)
+
+      const [incomeRes, expenseRes, recNoContact, payNoContact, subsRes, allSubsRes, overdueRes, contactsRes, personnelRes, personnelPayRes, quotesRes] = await Promise.all([
         supabase.from('transactions').select('amount').eq('user_id', user.id).eq('type', 'income').eq('status', 'completed').gte('transaction_date', start).lte('transaction_date', end),
         supabase.from('transactions').select('amount').eq('user_id', user.id).eq('type', 'expense').eq('status', 'completed').gte('transaction_date', start).lte('transaction_date', end),
         supabase.from('receivables').select('amount,paid_amount').eq('user_id', user.id).in('status', ['pending', 'partial', 'overdue']).is('contact_id', null),
@@ -71,8 +76,9 @@ export function DashboardPage() {
         supabase.from('subscriptions').select('name,amount,billing_cycle,next_billing_date').eq('user_id', user.id).eq('status', 'active'),
         supabase.from('receivables').select('description,amount,due_date').eq('user_id', user.id).eq('status', 'overdue').order('due_date').limit(5),
         supabase.from('contacts').select('current_balance').eq('user_id', user.id).eq('is_active', true).neq('current_balance', 0),
-        supabase.from('personnel').select('id,name,type,base_salary,base_bonus,ara_odeme,hire_date,termination_date,son_odeme_gunu').eq('user_id', user.id).eq('is_active', true),
+        supabase.from('personnel').select('id,name,type,base_salary,base_bonus,ara_odeme,bakiye,hire_date,termination_date,son_odeme_gunu').eq('user_id', user.id).eq('is_active', true),
         supabase.from('personnel_payments').select('personnel_id,payment_type,period_month,period_year').eq('user_id', user.id),
+        supabase.from('leads').select('full_name,company,quote_amount,quote_date').eq('user_id', user.id).not('quote_amount', 'is', null).gte('quote_date', monthStart).lte('quote_date', monthEnd).order('quote_date', { ascending: false }),
       ])
 
       const monthlyIncome = (incomeRes.data ?? []).reduce((s, r) => s + r.amount, 0)
@@ -83,30 +89,37 @@ export function DashboardPage() {
       const noContactPay = (payNoContact.data ?? []).reduce((s, r) => s + (r.amount - (r.paid_amount ?? 0)), 0)
       const subscriptionTotal = (allSubsRes.data ?? []).reduce((s: number, sub: any) => s + sub.amount, 0)
 
-      // Ödenmemiş personel ödemeleri — mevcut ay SAYILMAZ (haziran maaşı temmuz 20'de ödenir, temmuz 1'den önce gösterilmez)
       const allPersonnel = (personnelRes.data ?? []) as any[]
       const allPersonnelPays = (personnelPayRes.data ?? []) as any[]
+      const todayStr = now.toISOString().slice(0, 10)
       let personnelUnpaid = 0
-      const CUTOFF_YEAR = 2026; const CUTOFF_MONTH = 5
-      for (let i = 1; i <= 2; i++) {
+
+      // Serbest çalışanlar: bakiye > 0 ise ödenmemiş alacakları var
+      for (const p of allPersonnel) {
+        if (p.type !== 'employee' && Number(p.bakiye) > 0) {
+          personnelUnpaid += Number(p.bakiye)
+        }
+      }
+
+      // Çalışanlar: son 3 ay, vade ayının 10'undan sonra göster
+      for (let i = 0; i <= 2; i++) {
         const d = subMonths(now, i)
         const m = d.getMonth() + 1
         const y = d.getFullYear()
-        if (y < CUTOFF_YEAR || (y === CUTOFF_YEAR && m < CUTOFF_MONTH)) continue
         const mStart = `${y}-${String(m).padStart(2,'0')}-01`
         const mEnd = new Date(y, m, 0).toISOString().slice(0, 10)
+        const dueM = m === 12 ? 1 : m + 1
+        const dueY = m === 12 ? y + 1 : y
+        const visibleFrom = `${dueY}-${String(dueM).padStart(2,'0')}-11`
+        if (todayStr < visibleFrom) continue
         for (const p of allPersonnel) {
+          if (p.type !== 'employee') continue
           if (p.termination_date && p.termination_date < mStart) continue
           if (p.hire_date && p.hire_date > mEnd) continue
           const paid = (type: string) => allPersonnelPays.some((pay: any) =>
             pay.personnel_id === p.id && pay.payment_type === type && pay.period_month === m && pay.period_year === y)
-          if (p.type === 'employee') {
-            if (Number(p.base_salary) > 0 && !paid('salary'))  personnelUnpaid += Number(p.base_salary)
-            if (Number(p.base_bonus)  > 0 && !paid('bonus'))   personnelUnpaid += Number(p.base_bonus)
-          } else {
-            const expected = Number(p.ara_odeme) || Number(p.base_salary) || 0
-            if (expected > 0 && !paid('freelance')) personnelUnpaid += expected
-          }
+          if (Number(p.base_salary) > 0 && !paid('salary')) personnelUnpaid += Number(p.base_salary)
+          if (Number(p.base_bonus)  > 0 && !paid('bonus'))  personnelUnpaid += Number(p.base_bonus)
         }
       }
 
@@ -130,8 +143,12 @@ export function DashboardPage() {
         })
       )
 
+      const monthlyQuoteLeads = (quotesRes.data ?? []) as { full_name: string; company: string | null; quote_amount: number; quote_date: string | null }[]
+      const monthlyQuoteTotal = monthlyQuoteLeads.reduce((s, l) => s + l.quote_amount, 0)
+
       setStats({
         monthlyIncome, monthlyExpense, pendingReceivables, pendingPayables,
+        monthlyQuoteTotal, monthlyQuoteCount: monthlyQuoteLeads.length, monthlyQuoteLeads,
         upcomingSubscriptions: subsRes.data ?? [],
         overdueReceivables: overdueRes.data ?? [],
         chartData,
@@ -206,7 +223,7 @@ export function DashboardPage() {
         supabase.from('contacts').select('id,name,current_balance').eq('user_id', user.id).eq('is_active', true).lt('current_balance', 0).order('current_balance'),
         supabase.from('payables').select('id,description,amount,paid_amount,due_date,status').eq('user_id', user.id).in('status', ['pending', 'partial', 'overdue']).is('contact_id', null).order('due_date'),
         supabase.from('subscriptions').select('id,name,amount,billing_cycle,next_billing_date').eq('user_id', user.id).eq('status', 'active').order('next_billing_date'),
-        supabase.from('personnel').select('id,name,type,base_salary,base_bonus,ara_odeme,hire_date,termination_date,son_odeme_gunu').eq('user_id', user.id).eq('is_active', true),
+        supabase.from('personnel').select('id,name,type,base_salary,base_bonus,ara_odeme,bakiye,hire_date,termination_date,son_odeme_gunu').eq('user_id', user.id).eq('is_active', true),
         supabase.from('personnel_payments').select('personnel_id,payment_type,period_month,period_year').eq('user_id', user.id),
       ])
       const contactItems: DetailItem[] = (contactsData.data ?? []).map((c: any) => ({
@@ -220,25 +237,42 @@ export function DashboardPage() {
         id: s.id, label: s.name, sub: `Abonelik · ${CYCLE_TR[s.billing_cycle] ?? s.billing_cycle}`,
         amount: s.amount, date: s.next_billing_date && s.next_billing_date >= today ? s.next_billing_date : in30str, negative: true,
       }))
-      // Mevcut ay (i=0) SAYILMAZ — haziran maaşı temmuz 20'de ödenir, temmuz 1'den önce borç gösterilmez
+      const pannelToday = new Date().toISOString().slice(0, 10)
       const personnelItems: DetailItem[] = []
       const pList = (personnelData.data ?? []) as any[]
       const pPays = (personnelPayData.data ?? []) as any[]
       const MONTHS_TR = ['Ocak','Şubat','Mart','Nisan','Mayıs','Haziran','Temmuz','Ağustos','Eylül','Ekim','Kasım','Aralık']
-      const CY = 2026; const CM = 5
-      for (let i = 1; i <= 2; i++) {
+
+      // Serbest çalışanlar: bakiye > 0 olanları göster
+      for (const p of pList) {
+        if (p.type !== 'employee' && Number(p.bakiye) > 0) {
+          personnelItems.push({
+            id: `${p.id}-bakiye`,
+            label: `${p.name} — Serbest Ödeme`,
+            sub: 'Serbest Çalışan · Bakiye',
+            amount: Number(p.bakiye),
+            negative: true,
+          })
+        }
+      }
+
+      // Çalışanlar: son 3 ay, vade ayının 10'undan sonra göster
+      for (let i = 0; i <= 2; i++) {
         const d = subMonths(nowD, i)
         const m = d.getMonth() + 1
         const y = d.getFullYear()
-        if (y < CY || (y === CY && m < CM)) continue
+        const dueM2 = m === 12 ? 1 : m + 1
+        const dueY2 = m === 12 ? y + 1 : y
+        const vis = `${dueY2}-${String(dueM2).padStart(2,'0')}-11`
+        if (pannelToday < vis) continue
         const mLabel = `${MONTHS_TR[m-1]} ${y}`
         const mStart = `${y}-${String(m).padStart(2,'0')}-01`
         const mEnd = new Date(y, m, 0).toISOString().slice(0, 10)
-        // Son ödeme günü bir sonraki ayda: haziran maaşı temmuz 20
         const dueMonth = m === 12 ? 1 : m + 1
         const dueYear = m === 12 ? y + 1 : y
         const dueDay = (p: any) => p.son_odeme_gunu ?? 20
         for (const p of pList) {
+          if (p.type !== 'employee') continue
           if (p.termination_date && p.termination_date < mStart) continue
           if (p.hire_date && p.hire_date > mEnd) continue
           const paid = (ptype: string) => pPays.some((pay: any) =>
@@ -246,17 +280,10 @@ export function DashboardPage() {
           const dd = dueDay(p)
           const dueDateStr = `${dueYear}-${String(dueMonth).padStart(2,'0')}-${String(dd).padStart(2,'0')}`
           const subLabel = `Personel · ${mLabel} · Son gün: ${dd} ${MONTHS_TR[dueMonth-1]}`
-          const subLabelFr = `Serbest Öğretmen · ${mLabel} · Son gün: ${dd} ${MONTHS_TR[dueMonth-1]}`
-          if (p.type === 'employee') {
-            if (Number(p.base_salary) > 0 && !paid('salary'))
-              personnelItems.push({ id: `${p.id}-sal-${m}-${y}`, label: `${p.name} — Maaş`, sub: subLabel, amount: Number(p.base_salary), date: dueDateStr, negative: true })
-            if (Number(p.base_bonus) > 0 && !paid('bonus'))
-              personnelItems.push({ id: `${p.id}-bon-${m}-${y}`, label: `${p.name} — Prim`, sub: subLabel, amount: Number(p.base_bonus), date: dueDateStr, negative: true })
-          } else {
-            const expected = Number(p.ara_odeme) || Number(p.base_salary) || 0
-            if (expected > 0 && !paid('freelance'))
-              personnelItems.push({ id: `${p.id}-fr-${m}-${y}`, label: `${p.name} — Serbest Ödeme`, sub: subLabelFr, amount: expected, date: dueDateStr, negative: true })
-          }
+          if (Number(p.base_salary) > 0 && !paid('salary'))
+            personnelItems.push({ id: `${p.id}-sal-${m}-${y}`, label: `${p.name} — Maaş`, sub: subLabel, amount: Number(p.base_salary), date: dueDateStr, negative: true })
+          if (Number(p.base_bonus) > 0 && !paid('bonus'))
+            personnelItems.push({ id: `${p.id}-bon-${m}-${y}`, label: `${p.name} — Prim`, sub: subLabel, amount: Number(p.base_bonus), date: dueDateStr, negative: true })
         }
       }
       setDetailItems([...contactItems, ...payItems, ...subItems, ...personnelItems])
@@ -328,27 +355,11 @@ export function DashboardPage() {
         ))}
       </div>
 
-      {/* Chart */}
-      <div className="bg-white rounded-2xl border border-border/50 shadow-sm p-6">
-        <h2 className="text-base font-semibold text-gray-900 mb-5">Son 6 Ay — Gelir / Gider</h2>
-        <ResponsiveContainer width="100%" height={250}>
-          <BarChart data={stats.chartData} margin={{ top: 5, right: 10, left: 10, bottom: 5 }}>
-            <CartesianGrid strokeDasharray="3 3" stroke="#f0f0f0" />
-            <XAxis dataKey="month" axisLine={false} tickLine={false} tick={{ fontSize: 12, fill: '#9ca3af' }} />
-            <YAxis tickFormatter={(v) => `₺${(v / 1000).toFixed(0)}k`} axisLine={false} tickLine={false} tick={{ fontSize: 12, fill: '#9ca3af' }} />
-            <Tooltip
-              formatter={(v) => typeof v === 'number' ? `₺${v.toLocaleString('tr-TR')}` : ''}
-              contentStyle={{ borderRadius: '12px', border: '1px solid #e5e7eb', boxShadow: '0 4px 20px rgba(0,0,0,0.08)' }}
-            />
-            <Legend wrapperStyle={{ fontSize: '12px' }} />
-            <Bar dataKey="gelir" fill="#22c55e" radius={[6, 6, 0, 0]} name="Gelir" />
-            <Bar dataKey="gider" fill="#ef4444" radius={[6, 6, 0, 0]} name="Gider" />
-          </BarChart>
-        </ResponsiveContainer>
-      </div>
+      {/* Belge Giriş Merkezi */}
+      <DocumentHub />
 
       {/* Bottom cards */}
-      <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
+      <div className="grid grid-cols-1 lg:grid-cols-3 gap-4">
         <div className="card-modern p-5">
           <div className="flex items-center gap-2 mb-4">
             <div className="kpi-icon bg-violet-50">
@@ -371,6 +382,41 @@ export function DashboardPage() {
                     <p className="text-xs text-muted-foreground">{formatDate(s.next_billing_date)}</p>
                   </div>
                   <AmountDisplay amount={s.amount} negative />
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
+
+        {/* Bu Ay Verilen Teklifler */}
+        <div className="card-modern p-5">
+          <div className="flex items-center gap-2 mb-1">
+            <div className="kpi-icon bg-amber-50">
+              <Banknote className="h-4 w-4 text-amber-600" />
+            </div>
+            <h3 className="text-sm font-semibold text-gray-900">Bu Ay Verilen Teklifler</h3>
+            <span className="ml-auto text-xs bg-amber-100 text-amber-700 px-2 py-0.5 rounded-full font-medium">{stats.monthlyQuoteCount} adet</span>
+          </div>
+          <p className="text-2xl font-bold text-amber-700 mb-3 pl-1">
+            ₺{stats.monthlyQuoteTotal.toLocaleString('tr-TR', { minimumFractionDigits: 2 })}
+          </p>
+          {stats.monthlyQuoteLeads.length === 0 ? (
+            <div className="py-4 text-center">
+              <Banknote className="h-8 w-8 text-muted-foreground/30 mx-auto mb-2" />
+              <p className="text-sm text-muted-foreground">Bu ay teklif verilmedi</p>
+            </div>
+          ) : (
+            <div className="space-y-1">
+              {stats.monthlyQuoteLeads.map((l, i) => (
+                <div key={i} className="flex items-center justify-between py-2 border-b border-border/40 last:border-0">
+                  <div>
+                    <p className="text-sm font-medium">{l.full_name}</p>
+                    {l.company && <p className="text-xs text-muted-foreground">{l.company}</p>}
+                  </div>
+                  <div className="text-right">
+                    <p className="text-sm font-semibold text-amber-700">₺{l.quote_amount.toLocaleString('tr-TR', { minimumFractionDigits: 2 })}</p>
+                    {l.quote_date && <p className="text-[10px] text-muted-foreground">{l.quote_date}</p>}
+                  </div>
                 </div>
               ))}
             </div>

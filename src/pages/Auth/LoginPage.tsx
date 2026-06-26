@@ -40,7 +40,8 @@ export function LoginPage() {
   return (
     <div className="min-h-screen flex">
       {/* ── Left panel ─────────────────────────────────── */}
-      <div className="hidden lg:flex lg:w-1/2 relative overflow-hidden bg-gradient-to-br from-indigo-600 via-indigo-700 to-violet-800 flex-col justify-between p-12">
+      <div className="hidden lg:flex lg:w-1/2 relative overflow-hidden flex-col justify-between p-12"
+        style={{ background: '#091832' }}>
         {/* Animated blobs */}
         <div className="absolute inset-0 overflow-hidden pointer-events-none">
           <div className="blob blob-1" />
@@ -48,14 +49,22 @@ export function LoginPage() {
           <div className="blob blob-3" />
         </div>
 
+        {/* Decorative cyan shapes */}
+        <div className="absolute right-0 top-1/4 opacity-15 pointer-events-none">
+          <div className="w-48 h-16 rounded-xl" style={{ background: '#00cfc3', transform: 'rotate(-8deg) translateX(30px)' }} />
+          <div className="w-48 h-16 rounded-xl mt-4" style={{ background: '#00cfc3', transform: 'rotate(-8deg) translateX(50px)' }} />
+          <div className="w-32 h-14 rounded-xl mt-4" style={{ background: '#00cfc3', transform: 'rotate(-8deg) translateX(20px)' }} />
+        </div>
+
         {/* Logo */}
         <div className="relative z-10 flex items-center gap-3">
-          <div className="h-10 w-10 rounded-2xl bg-white/20 backdrop-blur-sm flex items-center justify-center shadow-lg">
+          <div className="h-10 w-10 rounded-2xl flex items-center justify-center shadow-lg"
+            style={{ background: 'linear-gradient(135deg, #00cfc3, #00a89d)' }}>
             <Zap className="h-5 w-5 text-white" />
           </div>
           <div>
-            <h1 className="text-white font-bold text-lg leading-tight">Lattice Finance</h1>
-            <p className="text-indigo-200 text-xs">Finansal Yönetim Platformu</p>
+            <h1 className="font-bold text-lg leading-tight text-white">HAFA Finance</h1>
+            <p className="text-xs" style={{ color: '#4a7096' }}>Finansal Yönetim Platformu</p>
           </div>
         </div>
 
@@ -65,7 +74,7 @@ export function LoginPage() {
             <h2 className="text-white text-4xl font-bold leading-tight">
               İşletmenizi<br />tam kontrol<br />altında tutun.
             </h2>
-            <p className="text-indigo-200 text-base leading-relaxed max-w-xs">
+            <p className="text-base leading-relaxed max-w-xs" style={{ color: '#4a7096' }}>
               Tüm finansal verilerinizi tek bir platformda yönetin.
             </p>
           </div>
@@ -77,10 +86,11 @@ export function LoginPage() {
                 className="flex items-center gap-3 login-feature-item"
                 style={{ animationDelay: `${0.2 + i * 0.1}s` }}
               >
-                <div className="h-8 w-8 rounded-xl bg-white/15 flex items-center justify-center flex-shrink-0">
-                  <Icon className="h-4 w-4 text-white" />
+                <div className="h-8 w-8 rounded-xl flex items-center justify-center flex-shrink-0"
+                  style={{ background: 'rgba(0,207,195,0.15)' }}>
+                  <Icon className="h-4 w-4" style={{ color: '#00cfc3' }} />
                 </div>
-                <span className="text-white/85 text-sm">{text}</span>
+                <span className="text-sm" style={{ color: 'rgba(255,255,255,0.75)' }}>{text}</span>
               </div>
             ))}
           </div>
@@ -88,23 +98,24 @@ export function LoginPage() {
 
         {/* Bottom */}
         <div className="relative z-10">
-          <p className="text-indigo-300 text-xs">© 2026 Hafa Danışmanlık · Tüm hakları saklıdır</p>
+          <p className="text-xs" style={{ color: '#3d5a7a' }}>© 2026 Hafa Danışmanlık · Tüm hakları saklıdır</p>
         </div>
       </div>
 
       {/* ── Right panel ────────────────────────────────── */}
-      <div className="flex-1 flex items-center justify-center p-8 bg-gray-50">
+      <div className="flex-1 flex items-center justify-center p-8" style={{ background: '#eef2f7' }}>
         <div className="w-full max-w-sm login-form-enter">
           {/* Mobile logo */}
           <div className="lg:hidden flex items-center gap-2.5 mb-8 justify-center">
-            <div className="h-9 w-9 rounded-xl bg-gradient-to-br from-indigo-500 to-violet-600 flex items-center justify-center">
+            <div className="h-9 w-9 rounded-xl flex items-center justify-center"
+              style={{ background: 'linear-gradient(135deg, #00cfc3, #091832)' }}>
               <Zap className="h-4 w-4 text-white" />
             </div>
-            <span className="text-lg font-bold text-gray-900">Lattice Finance</span>
+            <span className="text-lg font-bold" style={{ color: '#091832' }}>HAFA Finance</span>
           </div>
 
           <div className="mb-8">
-            <h2 className="text-2xl font-bold text-gray-900">Hoş geldiniz</h2>
+            <h2 className="text-2xl font-bold" style={{ color: '#091832' }}>Hoş geldiniz</h2>
             <p className="text-muted-foreground mt-1 text-sm">Hesabınıza giriş yapın</p>
           </div>
 
